@@ -5,24 +5,34 @@ description: Analyze a TypeScript repo or monorepo for concrete refactoring oppo
 
 When invoked:
 
-1. Determine the current scope from the working directory.
+1. Use this as a post-session cleanup pass after Codex or Claude makes code changes.
+   - Start by scanning the agent's own changes before finalizing.
+   - Prefer changed scope first, then widen to package or workspace scope if the findings suggest broader duplication or architectural drift.
+
+2. Determine the current scope from the working directory.
    - If inside a package, prefer package scope first.
-   - If the user asks for broad analysis, use workspace scope.
+   - If the session touched multiple packages or shared infrastructure, widen to workspace scope.
 
-2. Run:
-   - `refactor-scout scan --format json --output .tmp/refactor-scout.json`
-   - For quick review on large repos, use `--scope changed` when appropriate.
+3. Run:
+   - `refactor-scout scan --scope changed --since origin/main --format json --output .tmp/refactor-scout.json`
+   - If changed scope is too narrow for the task, rerun with `--scope package:<name>` or `--scope workspace`.
 
-3. Read the report and group findings into:
+4. Read the report and prioritize:
+   - duplicated helpers or utilities introduced during the session
+   - repeated query, route, or data-shaping logic
+   - repeated UI/state patterns that should become shared hooks or components
+   - oversized new functions, boolean flag APIs, and parameter-heavy helpers
+
+5. Group findings into:
    - safe quick wins
    - architectural hotspots
    - findings requiring human judgment
 
-4. Prefer safe fixes first.
+6. Prefer safe fixes first.
    - Only use fixes marked safe.
    - Use dry-run unless the user clearly asked for edits.
 
-5. After any edits:
+7. After any edits:
    - rerun the scan
    - run lint/tests for touched packages
    - summarize residual findings
