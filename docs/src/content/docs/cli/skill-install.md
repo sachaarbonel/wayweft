@@ -1,6 +1,7 @@
 ---
 title: "CLI: skill install"
 description: Install the portable Wayweft skill bundle into a target repository.
+slug: docs/cli/skill-install
 ---
 
 `wayweft skill install` writes the portable guidance bundle into a target repository so agents can reuse the same scan and triage workflow.

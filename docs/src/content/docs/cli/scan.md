@@ -1,6 +1,7 @@
 ---
 title: "CLI: scan"
 description: Analyze a workspace or package scope and emit actionable findings.
+slug: docs/cli/scan
 ---
 
 `wayweft scan` inspects the selected scope and reports refactor opportunities, structural risks, and rule matches.

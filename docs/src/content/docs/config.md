@@ -1,6 +1,7 @@
 ---
 title: Configuration
 description: Current config surface and practical expectations.
+slug: docs/config
 ---
 
 Wayweft is intentionally light on configuration in its current form.

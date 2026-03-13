@@ -8,26 +8,33 @@ export default defineConfig({
       title: "Wayweft Docs",
       description:
         "Setup guides, CLI usage, configuration notes, and roadmap details for Wayweft.",
+      tagline:
+        "Codebase intelligence for post-session review, continuity, and durable engineering handoff.",
+      customCss: ["./src/styles/brand.css"],
+      components: {
+        SiteTitle: "./src/components/SiteTitle.astro",
+      },
       sidebar: [
         {
           label: "Overview",
-          items: [{ label: "What is Wayweft?", slug: "index" }],
+          items: [{ label: "Documentation Home", slug: "docs" }],
         },
         {
           label: "Guides",
           items: [
-            { label: "Getting Started", slug: "getting-started" },
-            { label: "Configuration", slug: "config" },
-            { label: "CI", slug: "ci" },
-            { label: "Roadmap", slug: "roadmap" },
+            { label: "Getting Started", slug: "docs/getting-started" },
+            { label: "Configuration", slug: "docs/config" },
+            { label: "CI", slug: "docs/ci" },
+            { label: "Changelog", slug: "docs/changelog" },
+            { label: "Roadmap", slug: "docs/roadmap" },
           ],
         },
         {
           label: "CLI",
           items: [
-            { label: "scan", slug: "cli/scan" },
-            { label: "fix", slug: "cli/fix" },
-            { label: "skill install", slug: "cli/skill-install" },
+            { label: "scan", slug: "docs/cli/scan" },
+            { label: "fix", slug: "docs/cli/fix" },
+            { label: "skill install", slug: "docs/cli/skill-install" },
           ],
         },
       ],

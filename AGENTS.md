@@ -16,3 +16,6 @@
 - Never apply wide refactors without review.
 - Run lint/tests for touched packages only after fixes.
 - Do not modify generated files, fixtures, migrations, coverage, or dist output.
+- Treat documentation as part of the feature or fix. When behavior, commands, workflow, output, configuration, or positioning changes, update the relevant docs in `README.md` and `docs/` in the same change.
+- For user-visible features, fixes, or workflow changes, add or update an entry in `docs/src/content/docs/changelog.md`.
+- If a code change does not require doc updates, state that explicitly in the final summary instead of silently skipping docs.

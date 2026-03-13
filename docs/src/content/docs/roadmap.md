@@ -1,6 +1,7 @@
 ---
 title: Roadmap
 description: The short-term direction for Wayweft docs and workflow support.
+slug: docs/roadmap
 ---
 
 ## Near term

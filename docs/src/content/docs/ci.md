@@ -1,6 +1,7 @@
 ---
 title: CI
 description: Use Wayweft in automation without adding deployment complexity.
+slug: docs/ci
 ---
 
 Wayweft already supports output formats that fit CI pipelines well.

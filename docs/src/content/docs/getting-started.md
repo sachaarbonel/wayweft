@@ -1,6 +1,7 @@
 ---
 title: Getting Started
 description: Install Wayweft, run a first scan, and build the docs site locally.
+slug: docs/getting-started
 ---
 
 ## Install dependencies

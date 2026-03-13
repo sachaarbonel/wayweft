@@ -1,6 +1,7 @@
 ---
 title: "CLI: fix"
 description: Preview or apply safe cleanup rewrites.
+slug: docs/cli/fix
 ---
 
 `wayweft fix` is the low-risk rewrite companion to `scan`.
