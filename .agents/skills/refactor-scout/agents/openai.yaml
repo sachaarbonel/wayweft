@@ -1,0 +1,2 @@
+name: refactor-scout
+description: Analyze and safely refactor TypeScript codebases with package-aware scope handling.
