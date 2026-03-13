@@ -6,6 +6,13 @@ slug: docs/changelog
 
 This changelog is intentionally lightweight. Record user-visible features, fixes, docs changes, and workflow updates here when they land.
 
+## 2026-03-13 (b)
+
+### Changed
+
+- Updated site copy to target duplicate code detection, TypeScript monorepo maintenance, AI coding agent handoff, and codebase memory keywords across landing page, docs index, CLI references, and guides.
+- Added roadmap entries for AST-based duplicate detection and CLAUDE.md / AGENTS.md codebase memory integration.
+
 ## 2026-03-13
 
 ### Added

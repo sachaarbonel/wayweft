@@ -7,9 +7,9 @@ export default defineConfig({
     starlight({
       title: "Wayweft Docs",
       description:
-        "Setup guides, CLI usage, configuration notes, and roadmap details for Wayweft.",
+        "Detect duplicate code in TypeScript monorepos and preserve codebase memory across AI coding agent sessions with Wayweft.",
       tagline:
-        "Codebase intelligence for post-session review, continuity, and durable engineering handoff.",
+        "Duplicate code detection, safe codemods, and codebase memory for AI coding agent workflows.",
       customCss: ["./src/styles/brand.css"],
       components: {
         SiteTitle: "./src/components/SiteTitle.astro",

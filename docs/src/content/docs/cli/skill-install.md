@@ -1,10 +1,10 @@
 ---
 title: "CLI: skill install"
-description: Install the portable Wayweft skill bundle into a target repository.
+description: Install the portable codebase memory and review bundle for AI coding agent handoffs.
 slug: docs/cli/skill-install
 ---
 
-`wayweft skill install` writes the portable guidance bundle into a target repository so agents can reuse the same scan and triage workflow.
+`wayweft skill install` writes a portable codebase memory bundle into a target repository so AI coding agents like Claude and Codex inherit the same scan, triage, and review workflow across sessions.
 
 ## Install into the current repo
 

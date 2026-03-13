@@ -1,6 +1,6 @@
 ---
 title: Getting Started
-description: Install Wayweft, run a first scan, and build the docs site locally.
+description: Install Wayweft, detect duplicate code in your TypeScript project, and set up codebase memory for AI coding sessions.
 slug: docs/getting-started
 ---
 
@@ -45,14 +45,14 @@ Inspect setup and discovery assumptions:
 wayweft doctor --cwd /path/to/project
 ```
 
-## Agent workflow basics
+## AI coding agent cleanup workflow
 
-Wayweft is designed to complement agent sessions:
+Wayweft is designed to complement Claude, Codex, and other AI coding sessions:
 
-- scan the changed area or package before large edits
-- review the findings for duplication, complexity, and boundary issues
-- apply low-risk fixes with `--dry-run` first
-- install the skill bundle into target repos for repeatable guidance
+- scan changed files or a monorepo package to detect duplicate code before large edits
+- review findings for duplicate functions, complexity, and cross-package boundary issues
+- apply safe TypeScript codemods with `--dry-run` first
+- install the skill bundle to preserve codebase context for future agent sessions
 
 ## Docs workflow
 

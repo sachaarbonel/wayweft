@@ -1,10 +1,10 @@
 ---
 title: "CLI: fix"
-description: Preview or apply safe cleanup rewrites.
+description: Preview or apply safe TypeScript codemods and cleanup rewrites.
 slug: docs/cli/fix
 ---
 
-`wayweft fix` is the low-risk rewrite companion to `scan`.
+`wayweft fix` applies safe TypeScript codemods — the low-risk rewrite companion to `scan`.
 
 ## Safe first step
 
@@ -18,7 +18,7 @@ This keeps the workflow reviewable before touching files.
 
 ## Intended use
 
-Use `fix` for mechanical cleanup opportunities such as direct boolean returns, nullish coalescing, and optional chaining where the tool can preserve behavior with high confidence.
+Use `fix` for safe, automated TypeScript refactoring: direct boolean returns, nullish coalescing, and optional chaining. These are the mechanical codemods where the tool can preserve behavior with high confidence — ideal for cleaning up after AI coding sessions.
 
 ## Suggested workflow
 

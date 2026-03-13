@@ -1,10 +1,10 @@
 ---
 title: "CLI: scan"
-description: Analyze a workspace or package scope and emit actionable findings.
+description: Detect duplicate code and code quality issues across a TypeScript workspace or monorepo package.
 slug: docs/cli/scan
 ---
 
-`wayweft scan` inspects the selected scope and reports refactor opportunities, structural risks, and rule matches.
+`wayweft scan` detects duplicate functions, structural drift, and code quality issues across your TypeScript workspace or monorepo packages.
 
 ## Common examples
 
@@ -16,9 +16,9 @@ wayweft scan --cwd /path/to/repo --scope changed --since origin/main --format sa
 
 ## When to use it
 
-- Before a broad refactor to estimate risk
-- After an agent session to review drift in touched areas
-- In CI when you want machine-readable output such as SARIF
+- Before a broad refactor to detect duplicate code and estimate risk
+- After a Claude or Codex session to review drift and duplicate helpers in touched areas
+- In CI to catch cross-package duplication and emit SARIF for code scanning pipelines
 
 ## Output formats
 
