@@ -1,4 +1,7 @@
 dist
+docs/dist
 node_modules
+docs/node_modules
+docs/.astro
 .tmp
 coverage

@@ -91,6 +91,37 @@ For monorepos, it also writes package-local copies under each discovered workspa
 
 Note: the current CLI uses the current working directory as the scan target. A dedicated `--cwd` flag is not implemented yet.
 
+## Documentation site
+
+This repo includes a minimal self-hosted docs site built with Astro + Starlight in [`docs/`](/Users/pratimbhosale/.codex/worktrees/0ac1/refactor-scout/docs).
+
+Install dependencies for both apps:
+
+```bash
+npm install
+npm --prefix docs install
+```
+
+Run the docs locally:
+
+```bash
+npm run docs:dev
+```
+
+Build the static site:
+
+```bash
+npm run docs:build
+```
+
+Preview the built output:
+
+```bash
+npm run docs:preview
+```
+
+The generated static files are written to `docs/dist`. Self-hosting is just serving that directory from any static file host or web server.
+
 ## Implemented v1 rules
 
 - `long-function`
