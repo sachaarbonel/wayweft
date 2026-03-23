@@ -177,3 +177,5 @@ The generated static files are written to `docs/dist`. Self-hosting is just serv
 - `import-cycle`
 - `boundary-violation`
 - safe rewrite opportunities for direct boolean returns, nullish coalescing, and optional chaining
+
+`long-function` is context-aware by default. It keeps the base threshold for ordinary source files, but relaxes it for test files, script-like files, and JSX-heavy component files so common repo shapes do not dominate the report with low-value noise.

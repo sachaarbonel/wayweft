@@ -27,6 +27,11 @@ interface RuleContext {
   churnByFile: Map<string, number>;
 }
 
+interface LongFunctionContextTuning {
+  labels: string[];
+  maxLinesBonus: number;
+}
+
 export function runRules(
   workspace: Workspace,
   config: NormalizedConfig,
@@ -81,6 +86,8 @@ function pushFunctionFindings(
   }
 
   const packageConfig = getPackageRuleConfig(sourceFile.getFilePath(), context);
+  const longFunctionTuning = getLongFunctionContextTuning(sourceFile, context);
+  const effectiveLongFunctionMaxLines = packageConfig["long-function"].maxLines + longFunctionTuning.maxLinesBonus;
   const lines = body.getEndLineNumber() - body.getStartLineNumber() + 1;
   const depth = getMaxDepth(body);
   const params = fn.getParameters();
@@ -102,7 +109,11 @@ function pushFunctionFindings(
       ].includes(node.getKind()),
     ).length;
 
-  if (packageConfig["long-function"].enabled && lines > packageConfig["long-function"].maxLines) {
+  if (packageConfig["long-function"].enabled && lines > effectiveLongFunctionMaxLines) {
+    const thresholdLabel =
+      longFunctionTuning.labels.length > 0
+        ? `adjusted threshold of ${effectiveLongFunctionMaxLines} for ${longFunctionTuning.labels.join(" + ")} context`
+        : `configured threshold of ${packageConfig["long-function"].maxLines}`;
     findings.push(
       createFunctionFinding({
         fn,
@@ -110,10 +121,16 @@ function pushFunctionFindings(
         context,
         ruleId: "long-function",
         title: "Long function",
-        message: `Function spans ${lines} lines and exceeds the configured threshold of ${packageConfig["long-function"].maxLines}.`,
+        message: `Function spans ${lines} lines and exceeds the ${thresholdLabel}.`,
         category: "complexity",
-        structuralScore: Math.min(40, lines - packageConfig["long-function"].maxLines + 20),
-        evidence: [`lines=${lines}`, `branches=${branchCount}`, `depth=${depth}`],
+        structuralScore: Math.min(40, lines - effectiveLongFunctionMaxLines + 20),
+        evidence: [
+          `lines=${lines}`,
+          `threshold=${effectiveLongFunctionMaxLines}`,
+          `branches=${branchCount}`,
+          `depth=${depth}`,
+          ...longFunctionTuning.labels.map((label) => `context=${label}`),
+        ],
         suggestion: "Split the function into smaller units with one control-flow concern each.",
       }),
     );
@@ -209,6 +226,63 @@ function getMaxDepth(node: Node, level = 0): number {
     return level;
   }
   return Math.max(...nestedBlocks.map((child) => getMaxDepth(child, level + 1)));
+}
+
+function getLongFunctionContextTuning(
+  sourceFile: SourceFile,
+  context: RuleContext,
+): LongFunctionContextTuning {
+  const relativePath = normalizePath(path.relative(context.workspace.rootDir, sourceFile.getFilePath()));
+  const labels: string[] = [];
+  let maxLinesBonus = 0;
+
+  if (isTestLikeFile(relativePath)) {
+    labels.push("test files");
+    maxLinesBonus += 20;
+  }
+
+  if (isScriptLikeFile(relativePath)) {
+    labels.push("scripts");
+    maxLinesBonus += 15;
+  }
+
+  if (isJsxHeavyFile(sourceFile)) {
+    labels.push("JSX-heavy files");
+    maxLinesBonus += 10;
+  }
+
+  return {
+    labels,
+    maxLinesBonus,
+  };
+}
+
+function isTestLikeFile(relativePath: string): boolean {
+  return (
+    /(^|\/)(?:__tests__|tests)\//.test(relativePath) ||
+    /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(relativePath)
+  );
+}
+
+function isScriptLikeFile(relativePath: string): boolean {
+  return (
+    /(^|\/)(?:scripts|tools|bin)\//.test(relativePath) ||
+    /(?:^|\/)[^/]+\.(?:config|setup)\.[cm]?[jt]sx?$/.test(relativePath)
+  );
+}
+
+function isJsxHeavyFile(sourceFile: SourceFile): boolean {
+  const filePath = sourceFile.getFilePath();
+  if (!/\.[jt]sx$/.test(filePath)) {
+    return false;
+  }
+
+  const jsxNodeCount =
+    sourceFile.getDescendantsOfKind(SyntaxKind.JsxElement).length +
+    sourceFile.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement).length +
+    sourceFile.getDescendantsOfKind(SyntaxKind.JsxFragment).length;
+
+  return jsxNodeCount >= 8;
 }
 
 function createFunctionFinding(input: {

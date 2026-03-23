@@ -6,6 +6,14 @@ slug: docs/changelog
 
 This changelog is intentionally lightweight. Record user-visible features, fixes, docs changes, and workflow updates here when they land.
 
+## 2026-03-23
+
+### Changed
+
+- Tuned `long-function` so it applies context-aware thresholds for test files, script-like files, and JSX-heavy components instead of using the same line limit everywhere.
+- Added scan coverage proving the relaxed thresholds reduce noise in common frontend and test-heavy repos while still flagging genuine long-function hotspots.
+- Documented the new `long-function` behavior in the README and configuration guide.
+
 ## 2026-03-13 (b)
 
 ### Changed

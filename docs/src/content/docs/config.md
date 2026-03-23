@@ -50,6 +50,17 @@ export default defineConfig({
 });
 ```
 
+## Context-aware long-function tuning
+
+Wayweft keeps `long-function` opinionated, but it now adjusts the effective threshold by file context before raising a finding:
+
+- ordinary source files use the configured `maxLines` value directly
+- test files get an extra 20 lines of headroom
+- script-like files under paths such as `scripts/`, `tools/`, or `bin/` get an extra 15 lines
+- JSX-heavy `.tsx` and `.jsx` files get an extra 10 lines when they contain substantial JSX structure
+
+The base config surface does not change. If you set `rules["long-function"].maxLines`, these context bonuses are applied on top so the report stays readable on frontend and test-heavy repos without hiding true hotspots.
+
 ## Near-term direction
 
 As the tool grows, configuration should stay explicit and repo-local so agents and humans can reason about scan behavior without hidden defaults.

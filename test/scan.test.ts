@@ -140,10 +140,89 @@ describe("scanWorkspace", () => {
     expect(inventory).not.toContain("ignored-root/skip.ts");
     expect(inventory).not.toContain("packages/app/generated/skip.ts");
   });
+
+  it("tunes long-function findings by file context", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-long-function-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "long-function-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/plain.ts", createLongFunctionSource("plainHotspot", 48));
+    writeWorkspaceFile(rootDir, "src/component.tsx", createJsxHeavyComponent("CatalogPanel", 39, 8));
+    writeWorkspaceFile(rootDir, "test/catalog.test.ts", createLongFunctionSource("catalogRegression", 58));
+    writeWorkspaceFile(rootDir, "scripts/build.ts", createLongFunctionSource("buildRelease", 52));
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    const longFunctionFindings = result.findings.filter((finding) => finding.ruleId === "long-function");
+    const findingByFile = new Map(
+      longFunctionFindings.map((finding) => [path.relative(result.workspace.rootDir, finding.filePath), finding]),
+    );
+
+    expect(findingByFile.get("src/plain.ts")?.message).toContain("configured threshold of 45");
+    expect(findingByFile.get("src/plain.ts")?.evidence).toContain("threshold=45");
+    expect(findingByFile.has("src/component.tsx")).toBe(false);
+    expect(findingByFile.has("test/catalog.test.ts")).toBe(false);
+    expect(findingByFile.has("scripts/build.ts")).toBe(false);
+  });
+
+  it("explains adjusted long-function thresholds when context-heavy files still exceed them", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-long-function-context-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "long-function-context-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/heavy-component.tsx", createJsxHeavyComponent("HeavyComponent", 62, 10));
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    const finding = result.findings.find(
+      (entry) => entry.ruleId === "long-function" && entry.filePath.endsWith("src/heavy-component.tsx"),
+    );
+
+    expect(finding).toBeDefined();
+    expect(finding?.message).toContain("adjusted threshold of 55 for JSX-heavy files context");
+    expect(finding?.evidence).toContain("threshold=55");
+    expect(finding?.evidence).toContain("context=JSX-heavy files");
+  });
 });
 
 function writeWorkspaceFile(rootDir: string, relativePath: string, content: string) {
   const filePath = path.join(rootDir, relativePath);
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+}
+
+function createLongFunctionSource(name: string, statementCount: number): string {
+  const statements = Array.from({ length: statementCount }, (_, index) => `  total += ${index + 1};`).join("\n");
+  return [
+    `export function ${name}() {`,
+    "  let total = 0;",
+    statements,
+    "  return total;",
+    "}",
+  ].join("\n");
+}
+
+function createJsxHeavyComponent(name: string, statementCount: number, jsxElementCount: number): string {
+  const statements = Array.from({ length: statementCount }, (_, index) => `  const value${index + 1} = ${index + 1};`).join("\n");
+  const jsxLines = Array.from(
+    { length: jsxElementCount },
+    (_, index) => `      <section data-slot="${index + 1}">{value${Math.min(index + 1, statementCount)}}</section>`,
+  ).join("\n");
+
+  return [
+    `export function ${name}() {`,
+    statements,
+    "  return (",
+    "    <>",
+    jsxLines,
+    "    </>",
+    "  );",
+    "}",
+  ].join("\n");
 }
