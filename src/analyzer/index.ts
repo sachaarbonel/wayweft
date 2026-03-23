@@ -26,7 +26,7 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
     project.addSourceFileAtPathIfExists(filePath);
   }
 
-  let findings = runRules(workspace, config, project);
+  let findings = runRules(workspace, config, project, options.target);
   findings = findings.filter((finding) => finding.score >= (options.minScore ?? config.analysis.minScore));
   if (options.rule) {
     findings = findings.filter((finding) => finding.ruleId === options.rule);

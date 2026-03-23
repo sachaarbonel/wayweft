@@ -107,6 +107,7 @@ export interface Workspace {
   packageGraph: Map<string, string[]>;
   tsconfigGraph: Map<string, string[]>;
   fileInventory: string[];
+  changedFiles: string[];
 }
 
 export interface ScanTarget {
