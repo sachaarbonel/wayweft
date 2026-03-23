@@ -33,6 +33,22 @@ export interface Finding {
   fix?: FixHandle;
 }
 
+export interface HotspotSignals {
+  loc?: number;
+  churn?: number;
+  complexity?: number;
+  coupling?: number;
+  ownership?: number;
+}
+
+export interface FileHotspot {
+  filePath: string;
+  packageName?: string;
+  score: number;
+  signals: HotspotSignals;
+  topSignals: string[];
+}
+
 export interface RuleThresholds {
   maxLines?: number;
   maxDepth?: number;
@@ -128,10 +144,13 @@ export interface ScanOptions {
 export interface ScanResult {
   workspace: Workspace;
   findings: Finding[];
+  fileHotspots: FileHotspot[];
   packageHotspots: Array<{
     packageName: string;
     totalScore: number;
     findingCount: number;
+    averageScore?: number;
+    topSignals?: string[];
   }>;
   summary: {
     findingCount: number;

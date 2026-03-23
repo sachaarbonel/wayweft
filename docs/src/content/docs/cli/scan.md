@@ -4,9 +4,9 @@ description: Detect duplicate code and code quality issues across a TypeScript w
 slug: docs/cli/scan
 ---
 
-`wayweft scan` detects duplicate functions, structural drift, and code quality issues across your TypeScript workspace or monorepo packages.
+`wayweft scan` detects duplicate functions, structural drift, hotspot files, and code quality issues across your TypeScript workspace or monorepo packages.
 
-When you use `--scope changed` or `--scope since:<ref>`, Wayweft also emits heuristic `test-impact-hint` findings for changed source files. These findings list likely nearby tests when path and naming conventions match, or warn when no obvious test file is found.
+When you use `--scope changed` or `--scope since:<ref>`, Wayweft also emits heuristic `test-impact-hint`, `blast-radius`, and `change-risk` findings for changed source files. These findings list likely nearby tests, downstream local-import impact, and advisory review risk when a changed file sits in a sensitive or widely imported path.
 
 ## Common examples
 
@@ -29,3 +29,5 @@ wayweft scan --cwd /path/to/repo --scope changed --since origin/main --format sa
 - `json` for tooling integration
 - `markdown` for human-readable reports
 - `sarif` for code scanning pipelines
+
+Text and Markdown reports now include top hotspot files and package rollups. Hotspot scores combine deterministic local signals such as LOC, churn, complexity, coupling, and ownership spread so large files do not automatically dominate the ranking.

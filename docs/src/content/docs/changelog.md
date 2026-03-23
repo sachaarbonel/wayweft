@@ -12,12 +12,16 @@ This changelog is intentionally lightweight. Record user-visible features, fixes
 
 - Added heuristic `test-impact-hint` findings for `changed` and `since` scans so touched source files can point to likely related tests or warn when no nearby test match is found.
 - Added git-backed scan coverage for colocated and separate test directory conventions.
+- Added `near-duplicate-function` detection for high-confidence renamed or lightly edited duplicate helpers within a package.
+- Added graph-backed `blast-radius` findings for changed files with downstream local-import impact.
+- Added advisory `change-risk` findings for changed files in sensitive or shared-module paths.
+- Added multi-signal `hotspot-score` findings plus hotspot file and package summaries that combine LOC, churn, complexity, coupling, and ownership spread.
 
 ### Changed
 
 - Tuned `long-function` so it applies context-aware thresholds for test files, script-like files, and JSX-heavy components instead of using the same line limit everywhere.
 - Added scan coverage proving the relaxed thresholds reduce noise in common frontend and test-heavy repos while still flagging genuine long-function hotspots.
-- Documented the new `long-function` behavior in the README and configuration guide.
+- Documented the new `long-function`, hotspot, blast-radius, and change-risk behavior in the README and scan reference.
 
 ## 2026-03-13 (b)
 

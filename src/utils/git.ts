@@ -50,3 +50,31 @@ export function getChurnMap(cwd: string, files: string[]): Map<string, number> {
 
   return churn;
 }
+
+export function getAuthorSpreadMap(cwd: string, files: string[]): Map<string, number> {
+  const spread = new Map<string, number>();
+  if (!isGitRepo(cwd) || files.length === 0) {
+    return spread;
+  }
+
+  for (const file of files) {
+    try {
+      const output = execFileSync("git", ["log", "--format=%an", "--follow", "--", file], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const authors = new Set(
+        output
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+      );
+      spread.set(file, authors.size);
+    } catch {
+      spread.set(file, 0);
+    }
+  }
+
+  return spread;
+}

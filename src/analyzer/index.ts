@@ -2,8 +2,10 @@ import path from "node:path";
 import { Project } from "ts-morph";
 import { loadConfig } from "../config";
 import { discoverWorkspace } from "../workspace";
-import type { Finding, ScanOptions, ScanResult } from "../types";
+import type { ScanOptions, ScanResult } from "../types";
+import { analyzeModules, mapFilesToPackages, summarizePackageHotspots } from "./module-analysis";
 import { runRules } from "./rules";
+import { getAuthorSpreadMap, getChurnMap } from "../utils/git";
 
 export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
   const config = await loadConfig(options.cwd);
@@ -26,7 +28,22 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
     project.addSourceFileAtPathIfExists(filePath);
   }
 
-  let findings = runRules(workspace, config, project, options.target);
+  const relativeFiles = workspace.fileInventory.map((file) => path.relative(workspace.rootDir, file));
+  const churnByFile = config.analysis.includeGitChurn
+    ? getChurnMap(workspace.rootDir, relativeFiles)
+    : new Map<string, number>();
+  const authorSpreadByFile = config.analysis.includeGitChurn
+    ? getAuthorSpreadMap(workspace.rootDir, relativeFiles)
+    : new Map<string, number>();
+  const moduleAnalysis = analyzeModules({
+    workspace,
+    project,
+    fileToPackage: mapFilesToPackages(workspace),
+    churnByFile,
+    ownershipByFile: authorSpreadByFile,
+  });
+
+  let findings = runRules(workspace, config, project, options.target, moduleAnalysis, churnByFile);
   findings = findings.filter((finding) => finding.score >= (options.minScore ?? config.analysis.minScore));
   if (options.rule) {
     findings = findings.filter((finding) => finding.ruleId === options.rule);
@@ -35,10 +52,17 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
     findings = findings.slice(0, options.maxFindings);
   }
 
+  const findingsByPackage = new Map<string, number>();
+  for (const finding of findings) {
+    const key = finding.packageName ?? path.dirname(finding.filePath);
+    findingsByPackage.set(key, (findingsByPackage.get(key) ?? 0) + 1);
+  }
+
   return {
     workspace,
     findings,
-    packageHotspots: buildHotspots(findings),
+    fileHotspots: moduleAnalysis.fileHotspots,
+    packageHotspots: summarizePackageHotspots(moduleAnalysis.fileHotspots, findingsByPackage),
     summary: {
       findingCount: findings.length,
       bySeverity: {
@@ -49,23 +73,4 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
       maxScore: findings.reduce((max, finding) => Math.max(max, finding.score), 0),
     },
   };
-}
-
-function buildHotspots(findings: Finding[]) {
-  const scores = new Map<string, { totalScore: number; findingCount: number }>();
-  for (const finding of findings) {
-    const key = finding.packageName ?? path.dirname(finding.filePath);
-    const entry = scores.get(key) ?? { totalScore: 0, findingCount: 0 };
-    entry.totalScore += finding.score;
-    entry.findingCount += 1;
-    scores.set(key, entry);
-  }
-  return [...scores.entries()]
-    .map(([packageName, value]) => ({
-      packageName,
-      totalScore: value.totalScore,
-      findingCount: value.findingCount,
-    }))
-    .sort((left, right) => right.totalScore - left.totalScore)
-    .slice(0, 10);
 }

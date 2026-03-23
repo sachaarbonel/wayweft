@@ -20,10 +20,22 @@ export function formatTextReport(result: ScanResult): string {
     );
   }
 
+  if (result.fileHotspots.length > 0) {
+    lines.push("Top hotspot files:");
+    for (const hotspot of result.fileHotspots) {
+      lines.push(
+        `  - ${path.relative(result.workspace.rootDir, hotspot.filePath)}: score ${hotspot.score} (${hotspot.topSignals.join(", ") || "weak-signal mix"})`,
+      );
+    }
+    lines.push("");
+  }
+
   if (result.packageHotspots.length > 0) {
     lines.push("Top hotspot packages:");
     for (const hotspot of result.packageHotspots) {
-      lines.push(`  - ${hotspot.packageName}: ${hotspot.findingCount} findings, score ${hotspot.totalScore}`);
+      lines.push(
+        `  - ${hotspot.packageName}: score ${hotspot.totalScore}, avg ${hotspot.averageScore ?? 0}, findings ${hotspot.findingCount}${hotspot.topSignals?.length ? ` (${hotspot.topSignals.join(", ")})` : ""}`,
+      );
     }
   }
 
@@ -56,7 +68,15 @@ export function formatMarkdownReport(result: ScanResult): string {
     "| --- | ---: | --- | --- | --- | --- |",
     rows || "| - | - | - | - | - | No findings |",
     "",
-    "## Hotspots",
+    "## File Hotspots",
+    "",
+    result.fileHotspots
+      .map((hotspot) =>
+        `- ${path.relative(result.workspace.rootDir, hotspot.filePath)}: score ${hotspot.score} (${hotspot.topSignals.join(", ") || "weak-signal mix"})`,
+      )
+      .join("\n") || "- None",
+    "",
+    "## Package Hotspots",
     "",
     hotspots || "- None",
     "",
