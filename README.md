@@ -4,7 +4,7 @@ Wayweft is a codebase intelligence layer for AI-assisted development. It helps t
 
 Today, Wayweft includes a TypeScript-first CLI for changed-scope review, refactoring opportunity detection, safe cleanup workflows, and agent-facing skill bundles for Codex and Claude.
 
-Changed-scope scans now also add heuristic test impact hints, so touched source files can surface likely nearby tests or warn when no obvious test match exists.
+Changed-scope scans now also add heuristic test impact hints, graph-backed blast-radius hints, and advisory change-risk signals, so touched source files can surface likely nearby tests, downstream impact, and shared-module risk without depending on external services.
 
 ## Status
 
@@ -176,11 +176,17 @@ The generated static files are written to `docs/dist`. Self-hosting is just serv
 - `too-many-params`
 - `boolean-param`
 - `cross-package-duplication`
+- `near-duplicate-function`
 - `import-cycle`
 - `boundary-violation`
 - safe rewrite opportunities for direct boolean returns, nullish coalescing, and optional chaining
 - `test-impact-hint` for changed source files with likely related tests or missing nearby-test matches
+- `blast-radius` for changed files with downstream local-import impact
+- `change-risk` for changed files in sensitive or widely imported paths
+- `hotspot-score` for multi-signal hotspot ranking across files and package rollups
 
 `long-function` is context-aware by default. It keeps the base threshold for ordinary source files, but relaxes it for test files, script-like files, and JSX-heavy component files so common repo shapes do not dominate the report with low-value noise.
 
 `test-impact-hint` only runs for `changed` and `since` scans. It uses common TypeScript naming and directory conventions such as `src/`, `test/`, `tests/`, and `__tests__/` to suggest related tests. The output is intentionally advisory and does not claim to prove coverage.
+
+`hotspot-score` combines deterministic local signals such as LOC, churn, static complexity, coupling, and git author spread. LOC is treated as a weak signal, so a smaller but shared, complex, high-churn module can outrank a large stable file.

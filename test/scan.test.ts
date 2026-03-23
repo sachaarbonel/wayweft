@@ -258,6 +258,72 @@ describe("scanWorkspace", () => {
     expect(finding).toBeDefined();
     expect(finding?.message).toContain("packages/app/test/utils/format.spec.ts");
   });
+
+  it("ranks multi-signal hotspots without letting loc dominate on its own", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-hotspots-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "hotspot-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/large.ts", createLongFunctionSource("largeStableModule", 80));
+    writeWorkspaceFile(rootDir, "src/shared-risk.ts", createSharedRiskModule("sharedRisk"));
+    writeWorkspaceFile(rootDir, "src/consumer-a.ts", "import { sharedRisk } from './shared-risk';\nexport const a = () => sharedRisk(1);\n");
+    writeWorkspaceFile(rootDir, "src/consumer-b.ts", "import { sharedRisk } from './shared-risk';\nexport const b = () => sharedRisk(2);\n");
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    const relativeHotspots = result.fileHotspots.map((hotspot) => path.relative(result.workspace.rootDir, hotspot.filePath));
+    expect(relativeHotspots[0]).toBe("src/shared-risk.ts");
+    expect(result.fileHotspots[0]?.topSignals.join(" ")).toContain("coupling");
+    expect(result.findings.some((finding) => finding.ruleId === "hotspot-score" && finding.filePath.endsWith("src/shared-risk.ts"))).toBe(true);
+  });
+
+  it("adds blast-radius and change-risk findings for changed shared modules", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-change-risk-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "change-risk-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/shared/router.ts", "export const buildRoute = (slug: string) => `/products/${slug}`;\n");
+    writeWorkspaceFile(rootDir, "src/pages/home.ts", "import { buildRoute } from '../shared/router';\nexport const home = () => buildRoute('home');\n");
+    writeWorkspaceFile(rootDir, "src/pages/detail.ts", "import { buildRoute } from '../shared/router';\nexport const detail = () => buildRoute('detail');\n");
+
+    initializeGitFixture(rootDir);
+    writeWorkspaceFile(rootDir, "src/shared/router.ts", createSharedRiskModule("buildRoute"));
+    stageGitFiles(rootDir, ["src/shared/router.ts"]);
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "changed" },
+      minScore: 0,
+    });
+
+    const byRule = new Map(result.findings.map((finding) => [finding.ruleId, finding]));
+    expect(byRule.get("blast-radius")?.message).toContain("src/shared/router.ts can affect 2 downstream modules");
+    expect(byRule.get("change-risk")?.message).toContain("shared-utility-path");
+    expect(byRule.get("change-risk")?.message).toContain("fan-in=2");
+  });
+
+  it("detects high-confidence near-duplicate functions within a package", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-near-duplicate-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "near-duplicate-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/orders.ts", createNearDuplicateHelper("buildOrderSummary", "order", "summary"));
+    writeWorkspaceFile(rootDir, "src/invoices.ts", createNearDuplicateHelper("buildInvoiceSummary", "invoice", "details"));
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    const finding = result.findings.find((entry) => entry.ruleId === "near-duplicate-function");
+    expect(finding).toBeDefined();
+    expect(finding?.message).toContain("buildOrderSummary");
+    expect(finding?.message).toContain("buildInvoiceSummary");
+    expect(finding?.evidence).toEqual(expect.arrayContaining([expect.stringContaining("normalized=")]));
+    expect(finding?.evidence?.some((entry) => entry.includes("src/invoices.ts") || entry.includes("src/orders.ts"))).toBe(true);
+  });
 });
 
 function writeWorkspaceFile(rootDir: string, relativePath: string, content: string) {
@@ -304,6 +370,37 @@ function createJsxHeavyComponent(name: string, statementCount: number, jsxElemen
     jsxLines,
     "    </>",
     "  );",
+    "}",
+  ].join("\n");
+}
+
+function createSharedRiskModule(name: string): string {
+  return [
+    `export function ${name}(value: number) {`,
+    "  const next = value > 5 ? value - 1 : value + 1;",
+    "  if (next > 10) {",
+    "    return next * 2;",
+    "  }",
+    "  if (next < 0) {",
+    "    return 0;",
+    "  }",
+    "  return next;",
+    "}",
+  ].join("\n");
+}
+
+function createNearDuplicateHelper(name: string, itemName: string, fieldName: string): string {
+  return [
+    `export function ${name}(${itemName}: { id: string; amount: number; status?: string }) {`,
+    `  const ${fieldName} = {`,
+    `    id: ${itemName}.id,`,
+    `    label: ${itemName}.status ?? 'draft',`,
+    `    total: ${itemName}.amount * 100,`,
+    "  };",
+    `  if (${fieldName}.total > 1000) {`,
+    `    return { ...${fieldName}, priority: 'high' };`,
+    "  }",
+    `  return { ...${fieldName}, priority: 'normal' };`,
     "}",
   ].join("\n");
 }

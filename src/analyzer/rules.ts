@@ -7,6 +7,7 @@ import {
   type FunctionDeclaration,
   type MethodDeclaration,
   type SourceFile,
+  type VariableDeclaration,
 } from "ts-morph";
 import type {
   Finding,
@@ -17,7 +18,7 @@ import type {
   Workspace,
   WorkspacePackage,
 } from "../types";
-import { getChurnMap } from "../utils/git";
+import { mapFilesToPackages, type ModuleGraphAnalysis } from "./module-analysis";
 import { normalizePath } from "../utils/fs";
 
 interface RuleContext {
@@ -27,6 +28,7 @@ interface RuleContext {
   target: ScanTarget;
   fileToPackage: Map<string, WorkspacePackage>;
   churnByFile: Map<string, number>;
+  moduleAnalysis: ModuleGraphAnalysis;
 }
 
 interface LongFunctionContextTuning {
@@ -39,11 +41,10 @@ export function runRules(
   config: NormalizedConfig,
   project: Project,
   target: ScanTarget,
+  moduleAnalysis: ModuleGraphAnalysis,
+  churnByFile: Map<string, number>,
 ): Finding[] {
   const fileToPackage = mapFilesToPackages(workspace);
-  const churnByFile = config.analysis.includeGitChurn
-    ? getChurnMap(workspace.rootDir, workspace.fileInventory.map((file) => path.relative(workspace.rootDir, file)))
-    : new Map<string, number>();
   const context: RuleContext = {
     workspace,
     config,
@@ -51,14 +52,19 @@ export function runRules(
     target,
     fileToPackage,
     churnByFile,
+    moduleAnalysis,
   };
   const findings = [
     ...findFunctionComplexity(project.getSourceFiles(), context),
+    ...findNearDuplicateFunctions(project.getSourceFiles(), context),
     ...findSafeRewriteOpportunities(project.getSourceFiles(), context),
     ...findCrossPackageDuplication(project.getSourceFiles(), context),
     ...findImportCycles(context),
     ...findBoundaryViolations(project.getSourceFiles(), context),
     ...findTestImpactHints(project.getSourceFiles(), context),
+    ...findBlastRadiusHints(context),
+    ...findChangeRiskFindings(context),
+    ...findHotspotFindings(context),
   ];
   return findings.sort((left, right) => right.score - left.score);
 }
@@ -370,6 +376,333 @@ function findTestImpactHints(sourceFiles: SourceFile[], context: RuleContext): F
   }
 
   return findings;
+}
+
+interface DuplicateFunctionCandidate {
+  filePath: string;
+  relativePath: string;
+  packageName?: string;
+  sourceFile: SourceFile;
+  symbolName: string;
+  startLine: number;
+  startColumn: number;
+  normalizedBody: string;
+  structuralFingerprint: string;
+  statementShape: string;
+  statementCount: number;
+  bodyLength: number;
+}
+
+function findNearDuplicateFunctions(sourceFiles: SourceFile[], context: RuleContext): Finding[] {
+  if (!context.config.rules["near-duplicate-function"]?.enabled) {
+    return [];
+  }
+
+  const findings: Finding[] = [];
+  const seenPairs = new Set<string>();
+  const candidatesByPackage = new Map<string, DuplicateFunctionCandidate[]>();
+
+  for (const sourceFile of sourceFiles) {
+    const pkg = context.fileToPackage.get(sourceFile.getFilePath());
+    const packageName = pkg?.name ?? "__workspace__";
+    const bucket = candidatesByPackage.get(packageName) ?? [];
+    for (const candidate of collectDuplicateCandidates(sourceFile, context)) {
+      bucket.push(candidate);
+    }
+    candidatesByPackage.set(packageName, bucket);
+  }
+
+  for (const [packageName, candidates] of candidatesByPackage.entries()) {
+    const candidateBuckets = new Map<string, DuplicateFunctionCandidate[]>();
+    for (const candidate of candidates) {
+      const key = `${candidate.statementShape}:${candidate.statementCount}:${Math.round(candidate.bodyLength / 40)}`;
+      const bucket = candidateBuckets.get(key) ?? [];
+      bucket.push(candidate);
+      candidateBuckets.set(key, bucket);
+    }
+
+    for (const bucket of candidateBuckets.values()) {
+      if (bucket.length < 2) {
+        continue;
+      }
+      for (let index = 0; index < bucket.length; index += 1) {
+        for (let inner = index + 1; inner < bucket.length; inner += 1) {
+          const left = bucket[index];
+          const right = bucket[inner];
+          const pairKey = [left.filePath, left.symbolName, right.filePath, right.symbolName].sort().join("::");
+          if (seenPairs.has(pairKey) || left.symbolName === right.symbolName && left.filePath === right.filePath) {
+            continue;
+          }
+          seenPairs.add(pairKey);
+
+          const normalizedSimilarity = similarityRatio(left.normalizedBody, right.normalizedBody);
+          const structuralSimilarity = similarityRatio(left.structuralFingerprint, right.structuralFingerprint);
+          const statementSimilarity = similarityRatio(left.statementShape, right.statementShape);
+          const similarity = (normalizedSimilarity * 0.5) + (structuralSimilarity * 0.35) + (statementSimilarity * 0.15);
+          if (similarity < 0.88) {
+            continue;
+          }
+
+          findings.push({
+            id: `near-duplicate-function:${packageName}:${left.relativePath}:${left.symbolName}:${right.relativePath}:${right.symbolName}`,
+            ruleId: "near-duplicate-function",
+            title: "High-confidence near-duplicate function",
+            message: `${left.symbolName} in ${left.relativePath}:${left.startLine} closely matches ${right.symbolName} in ${right.relativePath}:${right.startLine} (similarity ${Math.round(similarity * 100)}%).`,
+            category: "duplication",
+            severity: similarity >= 0.94 ? "warning" : "info",
+            confidence: similarity >= 0.94 ? "high" : "medium",
+            score: Math.min(100, Math.round(45 + similarity * 35 + Math.min(left.statementCount, right.statementCount))),
+            packageName: packageName === "__workspace__" ? undefined : packageName,
+            filePath: left.filePath,
+            startLine: left.startLine,
+            startColumn: left.startColumn,
+            evidence: [
+              `normalized=${Math.round(normalizedSimilarity * 100)}%`,
+              `structural=${Math.round(structuralSimilarity * 100)}%`,
+              `statements=${left.statementCount}/${right.statementCount}`,
+              `${right.relativePath}:${right.startLine}:${right.symbolName}`,
+            ],
+            suggestion: "Consolidate the shared control flow into one helper, then keep only the truly different logic at the call sites.",
+          });
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
+function collectDuplicateCandidates(sourceFile: SourceFile, context: RuleContext): DuplicateFunctionCandidate[] {
+  const candidates: DuplicateFunctionCandidate[] = [];
+  const filePath = sourceFile.getFilePath();
+  const relativePath = relativeToWorkspace(filePath, context);
+  const packageName = context.fileToPackage.get(filePath)?.name;
+
+  const pushCandidate = (
+    fn: FunctionDeclaration | MethodDeclaration | ArrowFunction,
+    symbolName: string,
+  ) => {
+    const body = fn.getBody();
+    if (!body || !Node.isBlock(body)) {
+      return;
+    }
+    const statementCount = body.getStatements().length;
+    const bodyText = body.getText().replace(/\s+/g, " ").trim();
+    if (statementCount < 3 || bodyText.length < 80) {
+      return;
+    }
+    const location = sourceFile.getLineAndColumnAtPos(fn.getStart());
+    candidates.push({
+      filePath,
+      relativePath,
+      packageName,
+      sourceFile,
+      symbolName,
+      startLine: location.line,
+      startColumn: location.column,
+      normalizedBody: normalizeFunctionBody(body),
+      structuralFingerprint: structuralFingerprint(body),
+      statementShape: body.getStatements().map((statement) => SyntaxKind[statement.getKind()]).join(">"),
+      statementCount,
+      bodyLength: bodyText.length,
+    });
+  };
+
+  for (const fn of sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration)) {
+    pushCandidate(fn, fn.getName() ?? "<anonymous>");
+  }
+  for (const fn of sourceFile.getDescendantsOfKind(SyntaxKind.MethodDeclaration)) {
+    pushCandidate(fn, fn.getName() ?? "<anonymous>");
+  }
+  for (const fn of sourceFile.getDescendantsOfKind(SyntaxKind.ArrowFunction)) {
+    const variable = fn.getFirstAncestorByKind(SyntaxKind.VariableDeclaration);
+    pushCandidate(fn, variable?.getName() ?? "<anonymous>");
+  }
+
+  return candidates;
+}
+
+function normalizeFunctionBody(node: Node): string {
+  return node
+    .getText()
+    .replace(/'[^']*'|"[^"]*"|`[^`]*`/g, '"$STR"')
+    .replace(/\b\d+(?:\.\d+)?\b/g, "$NUM")
+    .replace(/\b[_$a-zA-Z][_$a-zA-Z0-9]*\b/g, (token) => {
+      if (["return", "if", "else", "switch", "case", "for", "while", "const", "let", "var", "function", "await", "async", "new", "throw", "try", "catch"].includes(token)) {
+        return token;
+      }
+      return "$ID";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function structuralFingerprint(node: Node): string {
+  return node
+    .getDescendants()
+    .filter((descendant) =>
+      ![
+        SyntaxKind.Identifier,
+        SyntaxKind.StringLiteral,
+        SyntaxKind.NumericLiteral,
+        SyntaxKind.NoSubstitutionTemplateLiteral,
+      ].includes(descendant.getKind()),
+    )
+    .map((descendant) => SyntaxKind[descendant.getKind()])
+    .join(">");
+}
+
+function similarityRatio(left: string, right: string): number {
+  if (left === right) {
+    return 1;
+  }
+  const leftTokens = left.split(/[^A-Za-z0-9$]+/).filter(Boolean);
+  const rightTokens = right.split(/[^A-Za-z0-9$]+/).filter(Boolean);
+  if (leftTokens.length === 0 || rightTokens.length === 0) {
+    return 0;
+  }
+  const leftSet = new Set(leftTokens);
+  const rightSet = new Set(rightTokens);
+  let overlap = 0;
+  for (const token of leftSet) {
+    if (rightSet.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.max(leftSet.size, rightSet.size);
+}
+
+function findBlastRadiusHints(context: RuleContext): Finding[] {
+  if (!["changed", "since"].includes(context.target.scope) || context.workspace.changedFiles.length === 0) {
+    return [];
+  }
+
+  const findings: Finding[] = [];
+  for (const filePath of context.workspace.changedFiles) {
+    const node = context.moduleAnalysis.nodes.get(filePath);
+    if (!node || node.blastRadius === 0) {
+      continue;
+    }
+
+    const location = firstFileLocation(context.project, filePath);
+    const dependents = node.importedBy
+      .map((dependent) => relativeToWorkspace(dependent, context))
+      .slice(0, 3);
+    findings.push({
+      id: `blast-radius:${node.relativePath}`,
+      ruleId: "blast-radius",
+      title: "Changed module has graph-backed blast radius",
+      message: `${node.relativePath} can affect ${node.blastRadius} downstream module${node.blastRadius === 1 ? "" : "s"} through local imports.`,
+      category: "architecture",
+      severity: node.blastRadius >= 4 ? "warning" : "info",
+      confidence: "high",
+      score: Math.min(100, 28 + node.blastRadius * 9 + node.fanIn * 4),
+      packageName: node.packageName,
+      filePath,
+      startLine: location.line,
+      startColumn: location.column,
+      evidence: [
+        `fanIn=${node.fanIn}`,
+        `fanOut=${node.fanOut}`,
+        `componentSize=${node.componentSize}`,
+        ...dependents,
+      ],
+      suggestion: "Review direct dependents first and widen validation if this module sits on a shared path.",
+    });
+  }
+  return findings;
+}
+
+function findChangeRiskFindings(context: RuleContext): Finding[] {
+  if (!["changed", "since"].includes(context.target.scope) || context.workspace.changedFiles.length === 0) {
+    return [];
+  }
+
+  const findings: Finding[] = [];
+  for (const filePath of context.workspace.changedFiles) {
+    const node = context.moduleAnalysis.nodes.get(filePath);
+    if (!node) {
+      continue;
+    }
+
+    const riskSignals = new Set<string>();
+    const relativePath = node.relativePath;
+    if (/(^|\/)(auth|billing|payment|route|router|config)(\/|\.|$)/i.test(relativePath)) {
+      riskSignals.add("sensitive-path");
+    }
+    if (/(^|\/)(shared|common|utils?|helpers?)(\/|\.|$)/i.test(relativePath)) {
+      riskSignals.add("shared-utility-path");
+    }
+    if (node.fanIn >= 2) {
+      riskSignals.add(`fan-in=${node.fanIn}`);
+    }
+    if (node.blastRadius >= 3) {
+      riskSignals.add(`blast-radius=${node.blastRadius}`);
+    }
+
+    if (riskSignals.size === 0) {
+      continue;
+    }
+
+    const location = firstFileLocation(context.project, filePath);
+    const structuralRisk = (riskSignals.has("sensitive-path") ? 22 : 0) +
+      (riskSignals.has("shared-utility-path") ? 12 : 0) +
+      Math.min(24, node.fanIn * 6) +
+      Math.min(18, node.blastRadius * 3);
+
+    findings.push({
+      id: `change-risk:${relativePath}`,
+      ruleId: "change-risk",
+      title: "Changed file merits extra review",
+      message: `${relativePath} matches advisory change-risk heuristics: ${[...riskSignals].join(", ")}.`,
+      category: "maintainability",
+      severity: structuralRisk >= 45 ? "warning" : "info",
+      confidence: "medium",
+      score: Math.min(100, 24 + structuralRisk),
+      packageName: node.packageName,
+      filePath,
+      startLine: location.line,
+      startColumn: location.column,
+      evidence: [...riskSignals],
+      suggestion: "Inspect call sites, config paths, and nearby tests before treating this as a routine low-risk edit.",
+    });
+  }
+  return findings;
+}
+
+function findHotspotFindings(context: RuleContext): Finding[] {
+  const findings: Finding[] = [];
+  for (const hotspot of context.moduleAnalysis.fileHotspots) {
+    if (hotspot.score < 45) {
+      continue;
+    }
+    const location = firstFileLocation(context.project, hotspot.filePath);
+    findings.push({
+      id: `hotspot-score:${normalizePath(path.relative(context.workspace.rootDir, hotspot.filePath))}`,
+      ruleId: "hotspot-score",
+      title: "Multi-signal hotspot",
+      message: `${relativeToWorkspace(hotspot.filePath, context)} ranks as a hotspot with combined signals from ${hotspot.topSignals.join(", ")}.`,
+      category: "architecture",
+      severity: hotspot.score >= 70 ? "warning" : "info",
+      confidence: "medium",
+      score: hotspot.score,
+      packageName: hotspot.packageName,
+      filePath: hotspot.filePath,
+      startLine: location.line,
+      startColumn: location.column,
+      evidence: Object.entries(hotspot.signals).map(([signal, value]) => `${signal}=${value ?? 0}`),
+      suggestion: "Use the signal breakdown to decide whether to split, stabilize, or add coverage instead of treating raw size as the main signal.",
+    });
+  }
+  return findings;
+}
+
+function firstFileLocation(project: Project, filePath: string): { line: number; column: number } {
+  const sourceFile = project.getSourceFile(filePath);
+  if (!sourceFile) {
+    return { line: 1, column: 1 };
+  }
+  return sourceFile.getLineAndColumnAtPos(sourceFile.getStart());
 }
 
 function createFunctionFinding(input: {
@@ -729,16 +1062,4 @@ function findBoundaryViolations(sourceFiles: SourceFile[], context: RuleContext)
     }
   }
   return findings;
-}
-
-function mapFilesToPackages(workspace: Workspace): Map<string, WorkspacePackage> {
-  const map = new Map<string, WorkspacePackage>();
-  for (const pkg of workspace.packages) {
-    for (const filePath of workspace.fileInventory) {
-      if (filePath.startsWith(pkg.dir)) {
-        map.set(filePath, pkg);
-      }
-    }
-  }
-  return map;
 }

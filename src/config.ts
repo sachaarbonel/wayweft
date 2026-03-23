@@ -51,9 +51,13 @@ const defaultRules: Record<string, NormalizedConfig["rules"][string]> = {
     maxDepth: 3,
     maxParams: 4,
   },
+  "near-duplicate-function": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
   "import-cycle": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
   "boundary-violation": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
   "test-impact-hint": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
+  "blast-radius": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
+  "change-risk": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
+  "hotspot-score": { enabled: true, maxLines: 45, maxDepth: 3, maxParams: 4 },
 } satisfies NormalizedConfig["rules"];
 
 export const defaultIgnorePatterns = [
