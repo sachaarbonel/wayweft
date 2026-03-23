@@ -1,4 +1,5 @@
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -189,12 +190,92 @@ describe("scanWorkspace", () => {
     expect(finding?.evidence).toContain("threshold=55");
     expect(finding?.evidence).toContain("context=JSX-heavy files");
   });
+
+  it("adds heuristic nearby-test hints for changed source files", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-test-impact-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "test-impact-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/math.ts", "export function sum(a: number, b: number) { return a + b; }\n");
+    writeWorkspaceFile(rootDir, "tests/math.test.ts", "import { sum } from '../src/math';\nexpect(sum(1, 2)).toBe(3);\n");
+    writeWorkspaceFile(rootDir, "src/untested.ts", "export const untested = () => 'initial';\n");
+
+    initializeGitFixture(rootDir);
+    writeWorkspaceFile(rootDir, "src/math.ts", "export function sum(a: number, b: number) { return a + b + 1; }\n");
+    writeWorkspaceFile(rootDir, "src/untested.ts", "export const untested = () => 'changed';\n");
+    stageGitFiles(rootDir, ["src/math.ts", "src/untested.ts"]);
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "changed" },
+      minScore: 0,
+    });
+
+    const findings = result.findings.filter((finding) => finding.ruleId === "test-impact-hint");
+    const byFile = new Map(findings.map((finding) => [path.relative(result.workspace.rootDir, finding.filePath), finding]));
+
+    expect(byFile.get("src/math.ts")?.title).toBe("Likely related tests for changed source");
+    expect(byFile.get("src/math.ts")?.message).toContain("tests/math.test.ts");
+    expect(byFile.get("src/untested.ts")?.title).toBe("Changed source without nearby tests");
+    expect(byFile.get("src/untested.ts")?.message).toContain("path-and-name heuristic");
+  });
+
+  it("matches separate test directories for changed source files in package layouts", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-test-impact-package-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(
+      rootDir,
+      "package.json",
+      JSON.stringify({ name: "test-impact-monorepo", workspaces: ["packages/*"] }, null, 2),
+    );
+    writeWorkspaceFile(rootDir, "packages/app/package.json", JSON.stringify({ name: "app" }, null, 2));
+    writeWorkspaceFile(rootDir, "packages/app/src/utils/format.ts", "export const format = (value: string) => value.trim();\n");
+    writeWorkspaceFile(
+      rootDir,
+      "packages/app/test/utils/format.spec.ts",
+      "import { format } from '../../src/utils/format';\nexpect(format(' x ')).toBe('x');\n",
+    );
+
+    initializeGitFixture(rootDir);
+    writeWorkspaceFile(
+      rootDir,
+      "packages/app/src/utils/format.ts",
+      "export const format = (value: string) => value.trim().toUpperCase();\n",
+    );
+    stageGitFiles(rootDir, ["packages/app/src/utils/format.ts"]);
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "changed" },
+      minScore: 0,
+    });
+
+    const finding = result.findings.find(
+      (entry) =>
+        entry.ruleId === "test-impact-hint" &&
+        path.relative(result.workspace.rootDir, entry.filePath) === "packages/app/src/utils/format.ts",
+    );
+
+    expect(finding).toBeDefined();
+    expect(finding?.message).toContain("packages/app/test/utils/format.spec.ts");
+  });
 });
 
 function writeWorkspaceFile(rootDir: string, relativePath: string, content: string) {
   const filePath = path.join(rootDir, relativePath);
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+}
+
+function initializeGitFixture(rootDir: string) {
+  execFileSync("git", ["init"], { cwd: rootDir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Wayweft Test"], { cwd: rootDir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "wayweft@example.com"], { cwd: rootDir, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: rootDir, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: rootDir, stdio: "ignore" });
+}
+
+function stageGitFiles(rootDir: string, relativePaths: string[]) {
+  execFileSync("git", ["add", ...relativePaths], { cwd: rootDir, stdio: "ignore" });
 }
 
 function createLongFunctionSource(name: string, statementCount: number): string {

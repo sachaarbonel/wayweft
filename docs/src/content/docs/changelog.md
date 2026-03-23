@@ -8,6 +8,11 @@ This changelog is intentionally lightweight. Record user-visible features, fixes
 
 ## 2026-03-23
 
+### Added
+
+- Added heuristic `test-impact-hint` findings for `changed` and `since` scans so touched source files can point to likely related tests or warn when no nearby test match is found.
+- Added git-backed scan coverage for colocated and separate test directory conventions.
+
 ### Changed
 
 - Tuned `long-function` so it applies context-aware thresholds for test files, script-like files, and JSX-heavy components instead of using the same line limit everywhere.

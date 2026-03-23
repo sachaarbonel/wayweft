@@ -13,6 +13,7 @@ import type {
   FindingCategory,
   NormalizedConfig,
   NormalizedRuleConfig,
+  ScanTarget,
   Workspace,
   WorkspacePackage,
 } from "../types";
@@ -23,6 +24,7 @@ interface RuleContext {
   workspace: Workspace;
   config: NormalizedConfig;
   project: Project;
+  target: ScanTarget;
   fileToPackage: Map<string, WorkspacePackage>;
   churnByFile: Map<string, number>;
 }
@@ -36,6 +38,7 @@ export function runRules(
   workspace: Workspace,
   config: NormalizedConfig,
   project: Project,
+  target: ScanTarget,
 ): Finding[] {
   const fileToPackage = mapFilesToPackages(workspace);
   const churnByFile = config.analysis.includeGitChurn
@@ -45,6 +48,7 @@ export function runRules(
     workspace,
     config,
     project,
+    target,
     fileToPackage,
     churnByFile,
   };
@@ -54,6 +58,7 @@ export function runRules(
     ...findCrossPackageDuplication(project.getSourceFiles(), context),
     ...findImportCycles(context),
     ...findBoundaryViolations(project.getSourceFiles(), context),
+    ...findTestImpactHints(project.getSourceFiles(), context),
   ];
   return findings.sort((left, right) => right.score - left.score);
 }
@@ -285,6 +290,88 @@ function isJsxHeavyFile(sourceFile: SourceFile): boolean {
   return jsxNodeCount >= 8;
 }
 
+function findTestImpactHints(sourceFiles: SourceFile[], context: RuleContext): Finding[] {
+  if (
+    !context.config.rules["test-impact-hint"]?.enabled ||
+    context.workspace.changedFiles.length === 0 ||
+    !["changed", "since"].includes(context.target.scope)
+  ) {
+    return [];
+  }
+
+  const findings: Finding[] = [];
+  const testFiles = sourceFiles.filter((sourceFile) => isTestLikeFile(relativeToWorkspace(sourceFile.getFilePath(), context)));
+  const changedSourceFiles = sourceFiles.filter((sourceFile) => {
+    const filePath = sourceFile.getFilePath();
+    return context.workspace.changedFiles.includes(filePath) && !isTestLikeFile(relativeToWorkspace(filePath, context));
+  });
+
+  const testsByKey = new Map<string, SourceFile[]>();
+  const testsByBaseName = new Map<string, SourceFile[]>();
+  for (const testFile of testFiles) {
+    const testPath = relativeToWorkspace(testFile.getFilePath(), context);
+    for (const key of buildTestLookupKeys(testPath)) {
+      const bucket = testsByKey.get(key) ?? [];
+      bucket.push(testFile);
+      testsByKey.set(key, bucket);
+    }
+
+    const baseName = path.basename(stripTestSuffix(stripExtension(testPath)));
+    const baseBucket = testsByBaseName.get(baseName) ?? [];
+    baseBucket.push(testFile);
+    testsByBaseName.set(baseName, baseBucket);
+  }
+
+  for (const sourceFile of changedSourceFiles) {
+    const filePath = sourceFile.getFilePath();
+    const relativePath = relativeToWorkspace(filePath, context);
+    const pkg = context.fileToPackage.get(filePath);
+    const candidates = findMatchingTests(relativePath, pkg?.name, testsByKey, testsByBaseName, context)
+      .slice(0, 3);
+    const location = sourceFile.getLineAndColumnAtPos(sourceFile.getStart());
+
+    if (candidates.length === 0) {
+      findings.push({
+        id: `test-impact-hint:${relativePath}:missing`,
+        ruleId: "test-impact-hint",
+        title: "Changed source without nearby tests",
+        message: `No nearby test files were matched for changed source ${relativePath}. This is a path-and-name heuristic, not proof of missing coverage.`,
+        category: "maintainability",
+        severity: "warning",
+        confidence: "medium",
+        score: 46,
+        packageName: pkg?.name,
+        filePath,
+        startLine: location.line,
+        startColumn: location.column,
+        evidence: buildSourceLookupKeys(relativePath),
+        suggestion: "Check whether this change should update an existing nearby test or add a focused new one.",
+      });
+      continue;
+    }
+
+    const relatedTests = candidates.map((candidate) => relativeToWorkspace(candidate.filePath, context));
+    findings.push({
+      id: `test-impact-hint:${relativePath}:related`,
+      ruleId: "test-impact-hint",
+      title: "Likely related tests for changed source",
+      message: `Changed source ${relativePath} likely maps to ${relatedTests.join(", ")}. This is a heuristic hint based on file paths and naming conventions.`,
+      category: "maintainability",
+      severity: "info",
+      confidence: "medium",
+      score: 28,
+      packageName: pkg?.name,
+      filePath,
+      startLine: location.line,
+      startColumn: location.column,
+      evidence: relatedTests,
+      suggestion: "Run or inspect the matched tests first, then widen coverage if the change crosses module boundaries.",
+    });
+  }
+
+  return findings;
+}
+
 function createFunctionFinding(input: {
   fn: FunctionDeclaration | MethodDeclaration | ArrowFunction;
   sourceFile: SourceFile;
@@ -343,6 +430,82 @@ function createFunctionFinding(input: {
         }
       : undefined,
   };
+}
+
+function findMatchingTests(
+  relativePath: string,
+  packageName: string | undefined,
+  testsByKey: Map<string, SourceFile[]>,
+  testsByBaseName: Map<string, SourceFile[]>,
+  context: RuleContext,
+): Array<{ filePath: string; score: number }> {
+  const scored = new Map<string, number>();
+  const preferredKeys = buildSourceLookupKeys(relativePath);
+
+  for (const key of preferredKeys) {
+    for (const testFile of testsByKey.get(key) ?? []) {
+      const score = key.includes("/") ? 5 : 4;
+      pushTestCandidate(scored, testFile.getFilePath(), score);
+    }
+  }
+
+  const baseName = path.basename(stripExtension(relativePath));
+  for (const testFile of testsByBaseName.get(baseName) ?? []) {
+    const samePackage = context.fileToPackage.get(testFile.getFilePath())?.name === packageName;
+    pushTestCandidate(scored, testFile.getFilePath(), samePackage ? 3 : 1);
+  }
+
+  return [...scored.entries()]
+    .map(([filePath, score]) => ({ filePath, score }))
+    .filter((entry) => entry.score >= 3)
+    .sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath));
+}
+
+function pushTestCandidate(scored: Map<string, number>, filePath: string, score: number): void {
+  const existing = scored.get(filePath) ?? 0;
+  if (score > existing) {
+    scored.set(filePath, score);
+  }
+}
+
+function buildTestLookupKeys(relativePath: string): string[] {
+  const withoutExtension = stripExtension(relativePath);
+  const strippedTestPath = stripTestContainers(stripTestSuffix(withoutExtension));
+  const keys = new Set<string>([strippedTestPath, path.basename(strippedTestPath)]);
+  if (strippedTestPath.endsWith("/index")) {
+    keys.add(strippedTestPath.slice(0, -"/index".length));
+  }
+  return [...keys];
+}
+
+function buildSourceLookupKeys(relativePath: string): string[] {
+  const withoutExtension = stripExtension(relativePath);
+  const strippedSourcePath = stripSourceContainers(withoutExtension);
+  const keys = new Set<string>([strippedSourcePath, path.basename(strippedSourcePath)]);
+  if (strippedSourcePath.endsWith("/index")) {
+    keys.add(strippedSourcePath.slice(0, -"/index".length));
+  }
+  return [...keys];
+}
+
+function stripExtension(relativePath: string): string {
+  return relativePath.replace(/\.[^.]+$/, "");
+}
+
+function stripTestSuffix(relativePath: string): string {
+  return relativePath.replace(/\.(?:test|spec)$/, "");
+}
+
+function stripSourceContainers(relativePath: string): string {
+  return relativePath.replace(/(^|\/)(?:src|lib|app)\//g, "$1");
+}
+
+function stripTestContainers(relativePath: string): string {
+  return relativePath.replace(/(^|\/)(?:__tests__|tests|test)\//g, "$1");
+}
+
+function relativeToWorkspace(filePath: string, context: RuleContext): string {
+  return normalizePath(path.relative(context.workspace.rootDir, filePath));
 }
 
 function findCrossPackageDuplication(sourceFiles: SourceFile[], context: RuleContext): Finding[] {

@@ -47,6 +47,9 @@ export async function discoverWorkspace(
   }
 
   const fileInventory = collectSourceFiles(rootDir, scopedPackages, config.ignore);
+  const changedFiles = getChangedFiles(rootDir, since)
+    .map((file) => path.resolve(rootDir, file))
+    .filter((filePath) => sourceExtensions.has(path.extname(filePath)));
 
   return {
     rootDir,
@@ -54,6 +57,7 @@ export async function discoverWorkspace(
     packageGraph: new Map(scopedPackages.map((pkg) => [pkg.name, pkg.internalDependencies])),
     tsconfigGraph,
     fileInventory,
+    changedFiles,
   };
 }
 
