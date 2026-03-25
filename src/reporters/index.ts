@@ -1,6 +1,6 @@
 import path from "node:path";
 import pc from "picocolors";
-import type { Finding, ScanResult } from "../types";
+import type { Finding, ScanResult, TriageQueueItem } from "../types";
 
 export function formatTextReport(result: ScanResult): string {
   const lines = [
@@ -8,6 +8,8 @@ export function formatTextReport(result: ScanResult): string {
     `Errors: ${result.summary.bySeverity.error}  Warnings: ${result.summary.bySeverity.warning}  Info: ${result.summary.bySeverity.info}`,
     "",
   ];
+
+  lines.push(...renderTextTriage(result));
 
   for (const finding of result.findings) {
     const relative = path.relative(result.workspace.rootDir, finding.filePath) || finding.filePath;
@@ -24,7 +26,7 @@ export function formatTextReport(result: ScanResult): string {
     lines.push("Top hotspot files:");
     for (const hotspot of result.fileHotspots) {
       lines.push(
-        `  - ${path.relative(result.workspace.rootDir, hotspot.filePath)}: score ${hotspot.score} (${hotspot.topSignals.join(", ") || "weak-signal mix"})`,
+        `  - ${path.relative(result.workspace.rootDir, hotspot.filePath)}: score ${hotspot.score} (${hotspot.topSignals.join(", ") || "weak-signal mix"})${hotspot.seamHints?.length ? `; seams ${hotspot.seamHints.join(", ")}` : ""}`,
       );
     }
     lines.push("");
@@ -62,6 +64,8 @@ export function formatMarkdownReport(result: ScanResult): string {
     `- Warnings: ${result.summary.bySeverity.warning}`,
     `- Info: ${result.summary.bySeverity.info}`,
     "",
+    ...renderMarkdownTriage(result),
+    "",
     "## Findings",
     "",
     "| Severity | Score | Rule | Package | Location | Message |",
@@ -72,7 +76,7 @@ export function formatMarkdownReport(result: ScanResult): string {
     "",
     result.fileHotspots
       .map((hotspot) =>
-        `- ${path.relative(result.workspace.rootDir, hotspot.filePath)}: score ${hotspot.score} (${hotspot.topSignals.join(", ") || "weak-signal mix"})`,
+        `- ${path.relative(result.workspace.rootDir, hotspot.filePath)}: score ${hotspot.score} (${hotspot.topSignals.join(", ") || "weak-signal mix"})${hotspot.seamHints?.length ? `; seams ${hotspot.seamHints.join(", ")}` : ""}`,
       )
       .join("\n") || "- None",
     "",
@@ -139,6 +143,73 @@ export function formatSarifReport(result: ScanResult): string {
 
 function uniqueRules(findings: Finding[]): string[] {
   return [...new Set(findings.map((finding) => finding.ruleId))];
+}
+
+function renderTextTriage(result: ScanResult): string[] {
+  const triage = result.triage;
+  if (!triage) {
+    return [];
+  }
+
+  const lines = ["Triage:"];
+  if (triage.themes.length === 0) {
+    lines.push("  No actionable workspace themes found.");
+  } else {
+    lines.push("  Themes:");
+    for (const theme of triage.themes) {
+      const relative = path.relative(result.workspace.rootDir, theme.leadFinding.filePath) || theme.leadFinding.filePath;
+      lines.push(`    - ${theme.title}: ${theme.findingCount} findings, lead ${relative}:${theme.leadFinding.startLine} - ${theme.description}`);
+    }
+  }
+
+  lines.push("  Start here:");
+  if (triage.startHere.length === 0) {
+    lines.push("    - none");
+  } else {
+    for (const item of triage.startHere) {
+      lines.push(renderTextQueueItem(result, item));
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
+function renderMarkdownTriage(result: ScanResult): string[] {
+  const triage = result.triage;
+  if (!triage) {
+    return [];
+  }
+
+  const lines = ["## Triage", ""];
+  if (triage.themes.length === 0) {
+    lines.push("No actionable workspace themes found.");
+  } else {
+    lines.push("### Themes", "");
+    for (const theme of triage.themes) {
+      const relative = path.relative(result.workspace.rootDir, theme.leadFinding.filePath) || theme.leadFinding.filePath;
+      lines.push(`- ${theme.title}: ${theme.findingCount} findings, lead \`${relative}:${theme.leadFinding.startLine}\` - ${theme.description}`);
+    }
+  }
+
+  lines.push("", "### Start here", "");
+  if (triage.startHere.length === 0) {
+    lines.push("- none");
+  } else {
+    for (const item of triage.startHere) {
+      lines.push(renderMarkdownQueueItem(result, item));
+    }
+  }
+  return lines;
+}
+
+function renderTextQueueItem(result: ScanResult, item: TriageQueueItem): string {
+  const relative = path.relative(result.workspace.rootDir, item.filePath) || item.filePath;
+  return `    ${item.rank}. ${badge(item.severity)} [${item.score}] ${item.title} (${item.ruleId}) ${relative}:${item.startLine} - ${item.themeTitle}: ${item.why}`;
+}
+
+function renderMarkdownQueueItem(result: ScanResult, item: TriageQueueItem): string {
+  const relative = path.relative(result.workspace.rootDir, item.filePath) || item.filePath;
+  return `${item.rank}. **${item.severity}** [${item.score}] ${item.title} (${item.ruleId}) \`${relative}:${item.startLine}\` - ${item.themeTitle}: ${item.why}`;
 }
 
 function escapePipe(text: string): string {

@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { formatJsonReport, formatMarkdownReport, formatTextReport } from "../src/reporters/index";
 import { applySafeFixes } from "../src/fixes/index";
 import { installSkillBundles } from "../src/skills/index";
 import { scanWorkspace } from "../src/analyzer/index";
@@ -275,8 +276,15 @@ describe("scanWorkspace", () => {
     });
 
     const relativeHotspots = result.fileHotspots.map((hotspot) => path.relative(result.workspace.rootDir, hotspot.filePath));
+    const largeHotspot = result.fileHotspots.find((hotspot) => hotspot.filePath.endsWith("src/large.ts"));
+    const textReport = formatTextReport(result);
+
     expect(relativeHotspots[0]).toBe("src/shared-risk.ts");
     expect(result.fileHotspots[0]?.topSignals.join(" ")).toContain("coupling");
+    expect(largeHotspot?.seamHints).toEqual(expect.arrayContaining([
+      expect.stringContaining("oversized export largeStableModule"),
+    ]));
+    expect(textReport).toContain("seams oversized export largeStableModule");
     expect(result.findings.some((finding) => finding.ruleId === "hotspot-score" && finding.filePath.endsWith("src/shared-risk.ts"))).toBe(true);
   });
 
@@ -304,7 +312,7 @@ describe("scanWorkspace", () => {
     expect(byRule.get("change-risk")?.message).toContain("fan-in=2");
   });
 
-  it("detects high-confidence near-duplicate functions within a package", async () => {
+  it("detects high-confidence near-duplicate function families within a package", async () => {
     const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-near-duplicate-"));
     tempDirs.push(rootDir);
     writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "near-duplicate-fixture" }, null, 2));
@@ -319,10 +327,110 @@ describe("scanWorkspace", () => {
 
     const finding = result.findings.find((entry) => entry.ruleId === "near-duplicate-function");
     expect(finding).toBeDefined();
-    expect(finding?.message).toContain("buildOrderSummary");
-    expect(finding?.message).toContain("buildInvoiceSummary");
-    expect(finding?.evidence).toEqual(expect.arrayContaining([expect.stringContaining("normalized=")]));
-    expect(finding?.evidence?.some((entry) => entry.includes("src/invoices.ts") || entry.includes("src/orders.ts"))).toBe(true);
+    expect(result.findings.filter((entry) => entry.ruleId === "near-duplicate-function")).toHaveLength(1);
+    expect(finding?.title).toBe("Near-duplicate function family");
+    expect(finding?.message).toContain("2 function");
+    expect(finding?.evidence).toEqual(expect.arrayContaining([
+      "family-size=2",
+      "member=src/invoices.ts:1:buildInvoiceSummary",
+      "member=src/orders.ts:1:buildOrderSummary",
+    ]));
+  });
+
+  it("collapses three-member duplicate families into one actionable finding", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-near-duplicate-family-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "near-duplicate-family-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/orders.ts", createNearDuplicateHelper("buildOrderSummary", "order", "summary"));
+    writeWorkspaceFile(rootDir, "src/invoices.ts", createNearDuplicateHelper("buildInvoiceSummary", "invoice", "details"));
+    writeWorkspaceFile(rootDir, "src/shipments.ts", createNearDuplicateHelper("buildShipmentSummary", "shipment", "result"));
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    const nearDuplicateFindings = result.findings.filter((entry) => entry.ruleId === "near-duplicate-function");
+    expect(nearDuplicateFindings).toHaveLength(1);
+    expect(nearDuplicateFindings[0]?.message).toContain("3 function");
+    expect(nearDuplicateFindings[0]?.evidence).toEqual(expect.arrayContaining([
+      "family-size=3",
+      "member=src/invoices.ts:1:buildInvoiceSummary",
+      "member=src/orders.ts:1:buildOrderSummary",
+      "member=src/shipments.ts:1:buildShipmentSummary",
+    ]));
+  });
+
+  it("reduces test/setup noise while keeping production duplicate families visible", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-near-duplicate-noise-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "near-duplicate-noise-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/orders.ts", createNearDuplicateHelper("buildOrderSummary", "order", "summary"));
+    writeWorkspaceFile(rootDir, "src/invoices.ts", createNearDuplicateHelper("buildInvoiceSummary", "invoice", "details"));
+    writeWorkspaceFile(rootDir, "test/orders.test.ts", createNearDuplicateHelper("buildOrderTestSummary", "order", "summary"));
+    writeWorkspaceFile(rootDir, "test/invoices.test.ts", createNearDuplicateHelper("buildInvoiceTestSummary", "invoice", "details"));
+    writeWorkspaceFile(rootDir, "setup/bootstrap.setup.ts", createNearDuplicateHelper("buildBootstrapSummary", "bootstrap", "summary"));
+    writeWorkspaceFile(rootDir, "setup/seed.setup.ts", createNearDuplicateHelper("buildSeedSummary", "seed", "details"));
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    const nearDuplicateFindings = result.findings.filter((entry) => entry.ruleId === "near-duplicate-function");
+    expect(nearDuplicateFindings).toHaveLength(1);
+    expect(nearDuplicateFindings[0]?.evidence).toEqual(expect.arrayContaining([
+      "family-size=2",
+      "member=src/invoices.ts:1:buildInvoiceSummary",
+      "member=src/orders.ts:1:buildOrderSummary",
+    ]));
+    expect(nearDuplicateFindings[0]?.evidence?.some((entry) => entry.includes("[test]") || entry.includes("[setup]"))).toBe(false);
+  });
+
+  it("adds workspace triage summaries to scan results and human-facing reports", async () => {
+    const result = await scanWorkspace({
+      cwd: fixtureRoot,
+      target: { scope: "workspace" },
+      minScore: 0,
+    });
+
+    expect(result.triage?.scope).toBe("workspace");
+    expect(result.triage?.themes.length).toBeGreaterThan(0);
+    expect(result.triage?.startHere.length).toBeGreaterThan(0);
+    expect(result.triage?.startHere[0]?.rank).toBe(1);
+
+    const text = formatTextReport(result);
+    const markdown = formatMarkdownReport(result);
+    const json = formatJsonReport(result);
+
+    expect(text).toContain("Triage:");
+    expect(text).toContain("Start here:");
+    expect(markdown).toContain("## Triage");
+    expect(markdown).toContain("### Start here");
+    expect(json).toContain("\"triage\"");
+    expect(json).toContain("\"startHere\"");
+  });
+
+  it("keeps changed-scope scans on the existing review path without workspace triage", async () => {
+    const rootDir = mkdtempSync(path.join(tmpdir(), "wayweft-triage-changed-"));
+    tempDirs.push(rootDir);
+    writeWorkspaceFile(rootDir, "package.json", JSON.stringify({ name: "triage-changed-fixture" }, null, 2));
+    writeWorkspaceFile(rootDir, "src/value.ts", "export const value = 1;\n");
+
+    initializeGitFixture(rootDir);
+    writeWorkspaceFile(rootDir, "src/value.ts", "export const value = 2;\n");
+    stageGitFiles(rootDir, ["src/value.ts"]);
+
+    const result = await scanWorkspace({
+      cwd: rootDir,
+      target: { scope: "changed" },
+      minScore: 0,
+    });
+
+    expect(result.triage).toBeUndefined();
+    expect(formatTextReport(result)).not.toContain("Triage:");
   });
 });
 

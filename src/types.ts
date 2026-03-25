@@ -47,6 +47,7 @@ export interface FileHotspot {
   score: number;
   signals: HotspotSignals;
   topSignals: string[];
+  seamHints?: string[];
 }
 
 export interface RuleThresholds {
@@ -131,6 +132,45 @@ export interface ScanTarget {
   value?: string;
 }
 
+export type TriageThemeId = "duplication" | "complexity" | "architecture" | "maintainability";
+
+export interface TriageLeadFinding {
+  id: string;
+  ruleId: string;
+  title: string;
+  severity: Severity;
+  score: number;
+  packageName?: string;
+  filePath: string;
+  startLine: number;
+  startColumn: number;
+}
+
+export interface TriageQueueItem extends TriageLeadFinding {
+  rank: number;
+  themeId: TriageThemeId;
+  themeTitle: string;
+  why: string;
+}
+
+export interface ScanTriageTheme {
+  id: TriageThemeId;
+  title: string;
+  description: string;
+  findingCount: number;
+  totalScore: number;
+  bySeverity: Record<Severity, number>;
+  leadFinding: TriageLeadFinding;
+}
+
+export interface ScanTriage {
+  scope: "workspace";
+  findingCount: number;
+  themeCount: number;
+  themes: ScanTriageTheme[];
+  startHere: TriageQueueItem[];
+}
+
 export interface ScanOptions {
   cwd: string;
   target: ScanTarget;
@@ -157,6 +197,7 @@ export interface ScanResult {
     bySeverity: Record<Severity, number>;
     maxScore: number;
   };
+  triage?: ScanTriage;
 }
 
 export interface TextEdit {

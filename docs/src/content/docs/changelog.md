@@ -6,6 +6,21 @@ slug: docs/changelog
 
 This changelog is intentionally lightweight. Record user-visible features, fixes, docs changes, and workflow updates here when they land.
 
+## 2026-03-25
+
+### Added
+
+- Added a workspace-only triage layer to scan output that groups findings into actionable themes and emits a deterministic start-here queue in text, markdown, and JSON reports.
+- Exposed structured `triage.themes` and `triage.startHere` data in JSON so tooling can consume the same review ordering as the human-readable reports.
+- Added deterministic hotspot seam hints so high-risk files can suggest likely extraction points such as oversized exports, helper groups, or route clusters.
+
+### Changed
+
+- Collapsed near-duplicate findings into actionable function families instead of emitting one report item per matched pair.
+- Tuned near-duplicate detection so test/setup helpers and tiny bodies produce much less default noise while meaningful production duplicates still surface.
+- Kept changed-scope scans on the existing review-oriented path without the new workspace triage section so session-focused output stays unchanged.
+- Documented the triage section, duplicate-family reporting, and hotspot seam hints in the scan CLI reference and README.
+
 ## 2026-03-23
 
 ### Added

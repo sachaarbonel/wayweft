@@ -6,6 +6,8 @@ Today, Wayweft includes a TypeScript-first CLI for changed-scope review, refacto
 
 Changed-scope scans now also add heuristic test impact hints, graph-backed blast-radius hints, and advisory change-risk signals, so touched source files can surface likely nearby tests, downstream impact, and shared-module risk without depending on external services.
 
+Workspace scans now add a deterministic triage layer, cluster near-duplicate helpers into actionable families, and attach hotspot seam hints so large repo reports start with a shorter, more useful refactor queue.
+
 ## Status
 
 This repository now includes:
@@ -177,6 +179,7 @@ The generated static files are written to `docs/dist`. Self-hosting is just serv
 - `boolean-param`
 - `cross-package-duplication`
 - `near-duplicate-function`
+- workspace triage summaries with grouped themes and a deterministic start-here queue
 - `import-cycle`
 - `boundary-violation`
 - safe rewrite opportunities for direct boolean returns, nullish coalescing, and optional chaining
@@ -189,4 +192,8 @@ The generated static files are written to `docs/dist`. Self-hosting is just serv
 
 `test-impact-hint` only runs for `changed` and `since` scans. It uses common TypeScript naming and directory conventions such as `src/`, `test/`, `tests/`, and `__tests__/` to suggest related tests. The output is intentionally advisory and does not claim to prove coverage.
 
-`hotspot-score` combines deterministic local signals such as LOC, churn, static complexity, coupling, and git author spread. LOC is treated as a weak signal, so a smaller but shared, complex, high-churn module can outrank a large stable file.
+`near-duplicate-function` clusters related matches into one family finding instead of emitting one finding per pair. Test/setup helpers and tiny bodies are filtered more aggressively by default so the highest-value production duplication stays visible near the top.
+
+Workspace scans include a triage section in text, markdown, and JSON output. It groups findings into a few actionable themes and builds a deterministic start-here queue for large repos. Changed-scope scans stay on the existing review-oriented path and do not emit workspace triage.
+
+`hotspot-score` combines deterministic local signals such as LOC, churn, static complexity, coupling, and git author spread. LOC is treated as a weak signal, so a smaller but shared, complex, high-churn module can outrank a large stable file. When local structure makes the next cut obvious, hotspot results also include seam hints such as oversized exports, helper groups, or route clusters.

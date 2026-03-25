@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Project, SyntaxKind, type SourceFile } from "ts-morph";
+import { Node, Project, SyntaxKind, type SourceFile } from "ts-morph";
 import type { FileHotspot, HotspotSignals, Workspace, WorkspacePackage } from "../types";
 import { normalizePath } from "../utils/fs";
 
@@ -51,6 +51,7 @@ export function analyzeModules(input: {
   const fileSet = new Set(input.workspace.fileInventory);
   const imports = new Map<string, Set<string>>();
   const importedBy = new Map<string, Set<string>>();
+  const seamHintsByFile = new Map<string, string[]>();
 
   for (const filePath of fileSet) {
     imports.set(filePath, new Set());
@@ -62,6 +63,9 @@ export function analyzeModules(input: {
     if (!fileSet.has(fromPath)) {
       continue;
     }
+
+    const relativePath = normalizePath(path.relative(input.workspace.rootDir, fromPath));
+    seamHintsByFile.set(fromPath, collectSplitSeamHints(sourceFile, relativePath));
 
     for (const declaration of sourceFile.getImportDeclarations()) {
       const target = resolveImportTarget(sourceFile, declaration.getModuleSpecifierValue(), sourceFileByPath, fileSet);
@@ -109,7 +113,7 @@ export function analyzeModules(input: {
     });
   }
 
-  const fileHotspots = buildFileHotspots([...nodes.values()]);
+  const fileHotspots = buildFileHotspots([...nodes.values()], seamHintsByFile);
   return { nodes, fileHotspots };
 }
 
@@ -215,7 +219,7 @@ function reachableDependents(filePath: string, importedBy: Map<string, Set<strin
   return seen.size;
 }
 
-function buildFileHotspots(nodes: ModuleGraphNode[]): FileHotspot[] {
+function buildFileHotspots(nodes: ModuleGraphNode[], seamHintsByFile: Map<string, string[]>): FileHotspot[] {
   const weights: Array<[keyof HotspotSignals, number]> = [
     ["loc", 0.15],
     ["churn", 0.25],
@@ -255,10 +259,156 @@ function buildFileHotspots(nodes: ModuleGraphNode[]): FileHotspot[] {
         score,
         signals,
         topSignals,
+        seamHints: seamHintsByFile.get(node.filePath) ?? [],
       };
     })
     .sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath))
     .slice(0, 10);
+}
+
+interface TopLevelCallable {
+  name: string;
+  exported: boolean;
+  statementCount: number;
+  kind: "function" | "arrow" | "class";
+}
+
+function collectSplitSeamHints(sourceFile: SourceFile, relativePath: string): string[] {
+  const callables = collectTopLevelCallables(sourceFile);
+  const hints: string[] = [];
+
+  const oversizedExport = [...callables]
+    .filter((callable) => callable.exported && callable.statementCount >= 16)
+    .sort((left, right) => right.statementCount - left.statementCount || left.name.localeCompare(right.name))[0];
+  if (oversizedExport) {
+    hints.push(`oversized export ${oversizedExport.name} (${oversizedExport.statementCount} stmts)`);
+  }
+
+  const helperGroups = new Map<string, TopLevelCallable[]>();
+  for (const callable of callables) {
+    if (callable.exported || callable.statementCount > 12) {
+      continue;
+    }
+    const prefix = normalizeHelperPrefix(callable.name);
+    if (!prefix) {
+      continue;
+    }
+    const group = helperGroups.get(prefix) ?? [];
+    group.push(callable);
+    helperGroups.set(prefix, group);
+  }
+
+  const repeatedHelperGroup = [...helperGroups.entries()]
+    .filter(([, group]) => group.length >= 3)
+    .sort((left, right) => right[1].length - left[1].length || left[0].localeCompare(right[0]))[0];
+  if (repeatedHelperGroup) {
+    hints.push(`helper group ${repeatedHelperGroup[0]}* x${repeatedHelperGroup[1].length}`);
+  }
+
+  const functionClusterCount = callables.filter((callable) => callable.kind === "function" || callable.kind === "arrow").length;
+  if (functionClusterCount >= 5) {
+    hints.push(`function cluster ${functionClusterCount} top-level callables`);
+  }
+
+  const routeHint = collectRouteHint(relativePath, callables);
+  if (routeHint) {
+    hints.push(routeHint);
+  }
+
+  return [...new Set(hints)].slice(0, 3);
+}
+
+function collectTopLevelCallables(sourceFile: SourceFile): TopLevelCallable[] {
+  const callables: TopLevelCallable[] = [];
+
+  for (const declaration of sourceFile.getFunctions()) {
+    const name = declaration.getName();
+    if (!name) {
+      continue;
+    }
+    callables.push({
+      name,
+      exported: declaration.isExported(),
+      statementCount: countFunctionStatements(declaration),
+      kind: "function",
+    });
+  }
+
+  for (const declaration of sourceFile.getClasses()) {
+    const name = declaration.getName();
+    if (!name) {
+      continue;
+    }
+    callables.push({
+      name,
+      exported: declaration.isExported(),
+      statementCount: declaration.getMembers().length,
+      kind: "class",
+    });
+  }
+
+  for (const statement of sourceFile.getVariableStatements()) {
+    const exported = statement.isExported();
+    for (const declaration of statement.getDeclarations()) {
+      const initializer = declaration.getInitializer();
+      if (!initializer || (!Node.isArrowFunction(initializer) && !Node.isFunctionExpression(initializer))) {
+        continue;
+      }
+      callables.push({
+        name: declaration.getName(),
+        exported,
+        statementCount: countFunctionStatements(initializer),
+        kind: "arrow",
+      });
+    }
+  }
+
+  return callables;
+}
+
+function countFunctionStatements(node: { getBody(): Node | undefined }): number {
+  const body = node.getBody();
+  if (!body) {
+    return 0;
+  }
+  if (Node.isBlock(body)) {
+    return body.getStatements().length;
+  }
+  return 1;
+}
+
+function normalizeHelperPrefix(name: string): string | undefined {
+  const parts = name
+    .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "")
+    .split(/[_\-.]+|(?=[A-Z])/)
+    .map((part) => part.toLowerCase())
+    .filter(Boolean);
+  const prefix = parts[0];
+  if (!prefix || prefix.length < 4) {
+    return undefined;
+  }
+  return prefix;
+}
+
+function collectRouteHint(relativePath: string, callables: TopLevelCallable[]): string | undefined {
+  const pathSegments = relativePath.split(/[\\/]/);
+  const routeSegment = pathSegments.find((segment) => /^(routes?|router|pages?|layouts?|handlers?|actions?)$/i.test(segment));
+  const routeNamedCallables = callables.filter((callable) => /(?:route|router|page|layout|loader|action|handler)/i.test(callable.name));
+
+  if (!routeSegment && routeNamedCallables.length < 2) {
+    return undefined;
+  }
+
+  if (routeSegment) {
+    const index = pathSegments.findIndex((segment) => segment === routeSegment);
+    const prefix = pathSegments.slice(0, index + 1).join("/");
+    return `route group ${prefix}/*`;
+  }
+
+  return `route group ${routeNamedCallables
+    .slice(0, 2)
+    .map((callable) => callable.name)
+    .join(", ")}`;
 }
 
 function normalizedPercent(value: number, max: number): number {

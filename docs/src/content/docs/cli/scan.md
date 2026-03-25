@@ -8,6 +8,8 @@ slug: docs/cli/scan
 
 When you use `--scope changed` or `--scope since:<ref>`, Wayweft also emits heuristic `test-impact-hint`, `blast-radius`, and `change-risk` findings for changed source files. These findings list likely nearby tests, downstream local-import impact, and advisory review risk when a changed file sits in a sensitive or widely imported path.
 
+Workspace scans also prepend a deterministic triage layer to text, markdown, and JSON output. The triage payload groups findings into a small set of actionable themes and builds a start-here queue so the highest-value files are reviewed first. Changed-scope scans keep their existing review-oriented findings and do not receive the workspace triage section.
+
 ## Common examples
 
 ```bash
@@ -30,4 +32,4 @@ wayweft scan --cwd /path/to/repo --scope changed --since origin/main --format sa
 - `markdown` for human-readable reports
 - `sarif` for code scanning pipelines
 
-Text and Markdown reports now include top hotspot files and package rollups. Hotspot scores combine deterministic local signals such as LOC, churn, complexity, coupling, and ownership spread so large files do not automatically dominate the ranking.
+Text and Markdown reports now include top hotspot files and package rollups. Workspace scans also include a `Triage` section with grouped themes and a deterministic `Start here` queue. Near-duplicate findings are clustered into actionable families instead of pairwise spam, and hotspot entries surface deterministic seam hints when a likely extraction target is obvious. Hotspot scores combine deterministic local signals such as LOC, churn, complexity, coupling, and ownership spread so large files do not automatically dominate the ranking. JSON output includes the same workspace triage data under `triage.themes` and `triage.startHere`.

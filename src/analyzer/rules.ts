@@ -66,7 +66,7 @@ export function runRules(
     ...findChangeRiskFindings(context),
     ...findHotspotFindings(context),
   ];
-  return findings.sort((left, right) => right.score - left.score);
+  return findings.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
 }
 
 function findFunctionComplexity(sourceFiles: SourceFile[], context: RuleContext): Finding[] {
@@ -391,6 +391,7 @@ interface DuplicateFunctionCandidate {
   statementShape: string;
   statementCount: number;
   bodyLength: number;
+  contextKind: "production" | "test" | "setup";
 }
 
 function findNearDuplicateFunctions(sourceFiles: SourceFile[], context: RuleContext): Finding[] {
@@ -399,7 +400,6 @@ function findNearDuplicateFunctions(sourceFiles: SourceFile[], context: RuleCont
   }
 
   const findings: Finding[] = [];
-  const seenPairs = new Set<string>();
   const candidatesByPackage = new Map<string, DuplicateFunctionCandidate[]>();
 
   for (const sourceFile of sourceFiles) {
@@ -414,8 +414,9 @@ function findNearDuplicateFunctions(sourceFiles: SourceFile[], context: RuleCont
 
   for (const [packageName, candidates] of candidatesByPackage.entries()) {
     const candidateBuckets = new Map<string, DuplicateFunctionCandidate[]>();
-    for (const candidate of candidates) {
-      const key = `${candidate.statementShape}:${candidate.statementCount}:${Math.round(candidate.bodyLength / 40)}`;
+    const sortedCandidates = [...candidates].sort(compareDuplicateCandidates);
+    for (const candidate of sortedCandidates) {
+      const key = `${candidate.statementShape}:${candidate.statementCount}:${Math.round(candidate.bodyLength / 60)}`;
       const bucket = candidateBuckets.get(key) ?? [];
       bucket.push(candidate);
       candidateBuckets.set(key, bucket);
@@ -425,46 +426,100 @@ function findNearDuplicateFunctions(sourceFiles: SourceFile[], context: RuleCont
       if (bucket.length < 2) {
         continue;
       }
-      for (let index = 0; index < bucket.length; index += 1) {
-        for (let inner = index + 1; inner < bucket.length; inner += 1) {
-          const left = bucket[index];
-          const right = bucket[inner];
-          const pairKey = [left.filePath, left.symbolName, right.filePath, right.symbolName].sort().join("::");
-          if (seenPairs.has(pairKey) || left.symbolName === right.symbolName && left.filePath === right.filePath) {
+      const adjacency = new Map<number, Array<{ index: number; similarity: number }>>();
+      for (let leftIndex = 0; leftIndex < bucket.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < bucket.length; rightIndex += 1) {
+          const left = bucket[leftIndex];
+          const right = bucket[rightIndex];
+          if (left.filePath === right.filePath && left.symbolName === right.symbolName) {
             continue;
           }
-          seenPairs.add(pairKey);
 
-          const normalizedSimilarity = similarityRatio(left.normalizedBody, right.normalizedBody);
-          const structuralSimilarity = similarityRatio(left.structuralFingerprint, right.structuralFingerprint);
-          const statementSimilarity = similarityRatio(left.statementShape, right.statementShape);
-          const similarity = (normalizedSimilarity * 0.5) + (structuralSimilarity * 0.35) + (statementSimilarity * 0.15);
+          const similarity = getDuplicateSimilarity(left, right);
           if (similarity < 0.88) {
             continue;
           }
 
-          findings.push({
-            id: `near-duplicate-function:${packageName}:${left.relativePath}:${left.symbolName}:${right.relativePath}:${right.symbolName}`,
-            ruleId: "near-duplicate-function",
-            title: "High-confidence near-duplicate function",
-            message: `${left.symbolName} in ${left.relativePath}:${left.startLine} closely matches ${right.symbolName} in ${right.relativePath}:${right.startLine} (similarity ${Math.round(similarity * 100)}%).`,
-            category: "duplication",
-            severity: similarity >= 0.94 ? "warning" : "info",
-            confidence: similarity >= 0.94 ? "high" : "medium",
-            score: Math.min(100, Math.round(45 + similarity * 35 + Math.min(left.statementCount, right.statementCount))),
-            packageName: packageName === "__workspace__" ? undefined : packageName,
-            filePath: left.filePath,
-            startLine: left.startLine,
-            startColumn: left.startColumn,
-            evidence: [
-              `normalized=${Math.round(normalizedSimilarity * 100)}%`,
-              `structural=${Math.round(structuralSimilarity * 100)}%`,
-              `statements=${left.statementCount}/${right.statementCount}`,
-              `${right.relativePath}:${right.startLine}:${right.symbolName}`,
-            ],
-            suggestion: "Consolidate the shared control flow into one helper, then keep only the truly different logic at the call sites.",
-          });
+          const leftNeighbors = adjacency.get(leftIndex) ?? [];
+          leftNeighbors.push({ index: rightIndex, similarity });
+          adjacency.set(leftIndex, leftNeighbors);
+
+          const rightNeighbors = adjacency.get(rightIndex) ?? [];
+          rightNeighbors.push({ index: leftIndex, similarity });
+          adjacency.set(rightIndex, rightNeighbors);
         }
+      }
+
+      const visited = new Set<number>();
+      for (let index = 0; index < bucket.length; index += 1) {
+        if (visited.has(index) || !adjacency.has(index)) {
+          continue;
+        }
+
+        const stack = [index];
+        const componentIndices: number[] = [];
+        visited.add(index);
+
+        while (stack.length > 0) {
+          const current = stack.pop()!;
+          componentIndices.push(current);
+          for (const neighbor of adjacency.get(current) ?? []) {
+            if (visited.has(neighbor.index)) {
+              continue;
+            }
+            visited.add(neighbor.index);
+            stack.push(neighbor.index);
+          }
+        }
+
+        if (componentIndices.length < 2) {
+          continue;
+        }
+
+        const component = componentIndices.map((componentIndex) => bucket[componentIndex]).sort(compareDuplicateCandidates);
+        const productionMembers = component.filter((candidate) => candidate.contextKind === "production");
+        if (productionMembers.length < 2) {
+          continue;
+        }
+
+        const reportablePair = findStrongestDuplicatePair(productionMembers);
+        if (!reportablePair || reportablePair.similarity < 0.88) {
+          continue;
+        }
+
+        const bestSimilarity = reportablePair.similarity;
+        const noisyMembers = component.length - productionMembers.length;
+        const representative = productionMembers[0];
+        const familySize = productionMembers.length;
+        findings.push({
+          id: `near-duplicate-function:${packageName}:${component.map((candidate) => formatDuplicateCandidate(candidate)).join("|")}`,
+          ruleId: "near-duplicate-function",
+          title: "Near-duplicate function family",
+          message:
+            noisyMembers > 0
+              ? `${familySize} production function${familySize === 1 ? "" : "s"} form a near-duplicate family; ${noisyMembers} test/setup helper${noisyMembers === 1 ? "" : "s"} also matched.`
+              : `${familySize} function${familySize === 1 ? "" : "s"} form a near-duplicate family.`,
+          category: "duplication",
+          severity: bestSimilarity >= 0.94 || familySize >= 3 ? "warning" : "info",
+          confidence: bestSimilarity >= 0.94 || familySize >= 3 ? "high" : "medium",
+          score: Math.min(
+            100,
+            Math.round(
+              38 +
+                bestSimilarity * 34 +
+                familySize * 6 +
+                Math.min(12, representative.statementCount * 2) -
+                noisyMembers * 4,
+            ),
+          ),
+          packageName: packageName === "__workspace__" ? undefined : packageName,
+          filePath: representative.filePath,
+          startLine: representative.startLine,
+          startColumn: representative.startColumn,
+          symbolName: representative.symbolName,
+          evidence: buildDuplicateFamilyEvidence(component, productionMembers, reportablePair, bestSimilarity),
+          suggestion: "Consolidate the shared control flow into one helper, then keep only the truly different logic at the call sites.",
+        });
       }
     }
   }
@@ -477,6 +532,7 @@ function collectDuplicateCandidates(sourceFile: SourceFile, context: RuleContext
   const filePath = sourceFile.getFilePath();
   const relativePath = relativeToWorkspace(filePath, context);
   const packageName = context.fileToPackage.get(filePath)?.name;
+  const contextKind = getDuplicateCandidateContext(relativePath);
 
   const pushCandidate = (
     fn: FunctionDeclaration | MethodDeclaration | ArrowFunction,
@@ -488,7 +544,9 @@ function collectDuplicateCandidates(sourceFile: SourceFile, context: RuleContext
     }
     const statementCount = body.getStatements().length;
     const bodyText = body.getText().replace(/\s+/g, " ").trim();
-    if (statementCount < 3 || bodyText.length < 80) {
+    const minStatements = contextKind === "production" ? 3 : 4;
+    const minBodyLength = contextKind === "production" ? 80 : 120;
+    if (statementCount < minStatements || bodyText.length < minBodyLength) {
       return;
     }
     const location = sourceFile.getLineAndColumnAtPos(fn.getStart());
@@ -505,6 +563,7 @@ function collectDuplicateCandidates(sourceFile: SourceFile, context: RuleContext
       statementShape: body.getStatements().map((statement) => SyntaxKind[statement.getKind()]).join(">"),
       statementCount,
       bodyLength: bodyText.length,
+      contextKind,
     });
   };
 
@@ -520,6 +579,121 @@ function collectDuplicateCandidates(sourceFile: SourceFile, context: RuleContext
   }
 
   return candidates;
+}
+
+function getDuplicateCandidateContext(relativePath: string): "production" | "test" | "setup" {
+  if (isTestLikeFile(relativePath)) {
+    return "test";
+  }
+  if (isSetupLikeFile(relativePath)) {
+    return "setup";
+  }
+  return "production";
+}
+
+function isSetupLikeFile(relativePath: string): boolean {
+  return /(?:^|\/)[^/]+\.(?:config|setup)\.[cm]?[jt]sx?$/.test(relativePath);
+}
+
+function compareDuplicateCandidates(left: DuplicateFunctionCandidate, right: DuplicateFunctionCandidate): number {
+  return (
+    left.relativePath.localeCompare(right.relativePath) ||
+    left.startLine - right.startLine ||
+    left.startColumn - right.startColumn ||
+    left.symbolName.localeCompare(right.symbolName)
+  );
+}
+
+function getDuplicateSimilarity(left: DuplicateFunctionCandidate, right: DuplicateFunctionCandidate): number {
+  const normalizedSimilarity = similarityRatio(left.normalizedBody, right.normalizedBody);
+  const structuralSimilarity = similarityRatio(left.structuralFingerprint, right.structuralFingerprint);
+  const statementSimilarity = similarityRatio(left.statementShape, right.statementShape);
+  return (normalizedSimilarity * 0.5) + (structuralSimilarity * 0.35) + (statementSimilarity * 0.15);
+}
+
+function findStrongestDuplicatePair(candidates: DuplicateFunctionCandidate[]): {
+  left: DuplicateFunctionCandidate;
+  right: DuplicateFunctionCandidate;
+  similarity: number;
+  normalizedSimilarity: number;
+  structuralSimilarity: number;
+  statementSimilarity: number;
+} | null {
+  let bestPair: {
+    left: DuplicateFunctionCandidate;
+    right: DuplicateFunctionCandidate;
+    similarity: number;
+    normalizedSimilarity: number;
+    structuralSimilarity: number;
+    statementSimilarity: number;
+  } | null = null;
+
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
+      const normalizedSimilarity = similarityRatio(left.normalizedBody, right.normalizedBody);
+      const structuralSimilarity = similarityRatio(left.structuralFingerprint, right.structuralFingerprint);
+      const statementSimilarity = similarityRatio(left.statementShape, right.statementShape);
+      const similarity = (normalizedSimilarity * 0.5) + (structuralSimilarity * 0.35) + (statementSimilarity * 0.15);
+      if (
+        !bestPair ||
+        similarity > bestPair.similarity ||
+        (similarity === bestPair.similarity && compareDuplicateCandidates(left, bestPair.left) < 0)
+      ) {
+        bestPair = {
+          left,
+          right,
+          similarity,
+          normalizedSimilarity,
+          structuralSimilarity,
+          statementSimilarity,
+        };
+      }
+    }
+  }
+
+  return bestPair;
+}
+
+function buildDuplicateFamilyEvidence(
+  component: DuplicateFunctionCandidate[],
+  productionMembers: DuplicateFunctionCandidate[],
+  bestPair: {
+    left: DuplicateFunctionCandidate;
+    right: DuplicateFunctionCandidate;
+    similarity: number;
+    normalizedSimilarity: number;
+    structuralSimilarity: number;
+    statementSimilarity: number;
+  },
+  bestSimilarity: number,
+): string[] {
+  const evidence = [
+    `family-size=${productionMembers.length}`,
+    `cluster-size=${component.length}`,
+    `best-similarity=${Math.round(bestSimilarity * 100)}%`,
+    `best-pair=${formatDuplicateCandidate(bestPair.left)} <-> ${formatDuplicateCandidate(bestPair.right)}`,
+    `normalized=${Math.round(bestPair.normalizedSimilarity * 100)}%`,
+    `structural=${Math.round(bestPair.structuralSimilarity * 100)}%`,
+    `statements=${bestPair.left.statementCount}/${bestPair.right.statementCount}`,
+  ];
+
+  const noisyMembers = component.filter((candidate) => candidate.contextKind !== "production");
+  if (noisyMembers.length > 0) {
+    evidence.push(`noisy-members=${noisyMembers.length}`);
+  }
+
+  for (const candidate of component) {
+    evidence.push(`member=${formatDuplicateCandidate(candidate)}`);
+  }
+
+  return evidence;
+}
+
+function formatDuplicateCandidate(candidate: DuplicateFunctionCandidate): string {
+  const suffix = candidate.contextKind === "production" ? "" : ` [${candidate.contextKind}]`;
+  return `${candidate.relativePath}:${candidate.startLine}:${candidate.symbolName}${suffix}`;
 }
 
 function normalizeFunctionBody(node: Node): string {
@@ -673,15 +847,20 @@ function findChangeRiskFindings(context: RuleContext): Finding[] {
 function findHotspotFindings(context: RuleContext): Finding[] {
   const findings: Finding[] = [];
   for (const hotspot of context.moduleAnalysis.fileHotspots) {
-    if (hotspot.score < 45) {
+    const seamHints = hotspot.seamHints ?? [];
+    const minimumScore = seamHints.length > 0 ? 35 : 45;
+    if (hotspot.score < minimumScore) {
       continue;
     }
     const location = firstFileLocation(context.project, hotspot.filePath);
+    const primaryHint = seamHints[0];
     findings.push({
       id: `hotspot-score:${normalizePath(path.relative(context.workspace.rootDir, hotspot.filePath))}`,
       ruleId: "hotspot-score",
       title: "Multi-signal hotspot",
-      message: `${relativeToWorkspace(hotspot.filePath, context)} ranks as a hotspot with combined signals from ${hotspot.topSignals.join(", ")}.`,
+      message: primaryHint
+        ? `${relativeToWorkspace(hotspot.filePath, context)} ranks as a hotspot with combined signals from ${hotspot.topSignals.join(", ")}. Start by extracting ${primaryHint}.`
+        : `${relativeToWorkspace(hotspot.filePath, context)} ranks as a hotspot with combined signals from ${hotspot.topSignals.join(", ")}.`,
       category: "architecture",
       severity: hotspot.score >= 70 ? "warning" : "info",
       confidence: "medium",
@@ -690,8 +869,13 @@ function findHotspotFindings(context: RuleContext): Finding[] {
       filePath: hotspot.filePath,
       startLine: location.line,
       startColumn: location.column,
-      evidence: Object.entries(hotspot.signals).map(([signal, value]) => `${signal}=${value ?? 0}`),
-      suggestion: "Use the signal breakdown to decide whether to split, stabilize, or add coverage instead of treating raw size as the main signal.",
+      evidence: [
+        ...Object.entries(hotspot.signals).map(([signal, value]) => `${signal}=${value ?? 0}`),
+        ...seamHints.map((hint) => `seam=${hint}`),
+      ],
+      suggestion: primaryHint
+        ? `Start by extracting ${primaryHint}, then use the signal breakdown to decide what else to split, stabilize, or cover.`
+        : "Use the signal breakdown to decide whether to split, stabilize, or add coverage instead of treating raw size as the main signal.",
     });
   }
   return findings;
