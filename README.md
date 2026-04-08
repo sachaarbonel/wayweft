@@ -2,7 +2,7 @@
 
 Wayweft is a codebase intelligence layer for AI-assisted development. It helps teams review changes after a Claude or Codex session, detect duplication and refactor drift, preserve codebase context, and carry knowledge forward across sessions.
 
-Today, Wayweft includes a TypeScript-first CLI for changed-scope review, refactoring opportunity detection, safe cleanup workflows, and agent-facing skill bundles for Codex and Claude.
+Today, Wayweft includes a TypeScript-first CLI for changed-scope review, refactoring opportunity detection, safe cleanup workflows, and agent-facing skill bundles for Codex and Claude. It also supports **Rust** via a `tree-sitter`-based analysis layer, so `.rs` files are scanned with the same complexity rules as TypeScript.
 
 Changed-scope scans now also add heuristic test impact hints, graph-backed blast-radius hints, and advisory change-risk signals, so touched source files can surface likely nearby tests, downstream impact, and shared-module risk without depending on external services.
 
@@ -13,8 +13,9 @@ Workspace scans now add a deterministic triage layer, cluster near-duplicate hel
 This repository now includes:
 
 - a TypeScript CLI and programmatic API
-- workspace and monorepo discovery
-- AST-based analysis with `ts-morph`
+- workspace and monorepo discovery (Node.js `package.json` and Rust `Cargo.toml`)
+- AST-based analysis with `ts-morph` for TypeScript/JavaScript
+- Rust analysis via `web-tree-sitter` + `tree-sitter-rust` (WASM grammar)
 - text, JSON, Markdown, and SARIF reporting
 - safe codemod scaffolding with dry-run/apply flow
 - portable skill bundles for Codex and Claude

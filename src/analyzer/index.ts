@@ -16,6 +16,8 @@ import type {
 import { analyzeModules, mapFilesToPackages, summarizePackageHotspots } from "./module-analysis";
 import { runRules } from "./rules";
 import { getAuthorSpreadMap, getChurnMap } from "../utils/git";
+import { createTreeSitterParser } from "./parsers/tree-sitter-parser";
+import { extractRustFunctions, extractRustImports } from "./extractors/rust";
 
 const triageThemeDefinitions: Record<
   TriageThemeId,
@@ -54,6 +56,10 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
     options.target.scope === "since" ? options.target.value : options.since,
   );
 
+  // Separate TS/JS and Rust files
+  const rustFilePaths = workspace.fileInventory.filter((f) => f.endsWith(".rs"));
+  const tsFilePaths = workspace.fileInventory.filter((f) => !f.endsWith(".rs"));
+
   const project = new Project({
     skipAddingFilesFromTsConfig: true,
     compilerOptions: {
@@ -62,7 +68,7 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
     },
   });
 
-  for (const filePath of workspace.fileInventory) {
+  for (const filePath of tsFilePaths) {
     project.addSourceFileAtPathIfExists(filePath);
   }
 
@@ -73,15 +79,42 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
   const authorSpreadByFile = config.analysis.includeGitChurn
     ? getAuthorSpreadMap(workspace.rootDir, relativeFiles)
     : new Map<string, number>();
+
+  // Process Rust files with tree-sitter
+  const fileToPackage = mapFilesToPackages(workspace);
+  let rustFunctions = undefined;
+  let rustFileData = undefined;
+
+  if (rustFilePaths.length > 0) {
+    try {
+      const tsParser = await createTreeSitterParser();
+      rustFunctions = rustFilePaths.flatMap((filePath) => {
+        const pkg = fileToPackage.get(filePath);
+        return extractRustFunctions(filePath, pkg?.name, tsParser);
+      });
+      rustFileData = rustFilePaths.map((filePath) => {
+        const pkg = fileToPackage.get(filePath);
+        return {
+          filePath,
+          packageName: pkg?.name,
+          imports: extractRustImports(filePath, tsParser),
+        };
+      });
+    } catch {
+      // tree-sitter unavailable — skip Rust analysis gracefully
+    }
+  }
+
   const moduleAnalysis = analyzeModules({
     workspace,
     project,
-    fileToPackage: mapFilesToPackages(workspace),
+    fileToPackage,
     churnByFile,
     ownershipByFile: authorSpreadByFile,
+    rustFileData,
   });
 
-  let findings = runRules(workspace, config, project, options.target, moduleAnalysis, churnByFile);
+  let findings = runRules(workspace, config, project, options.target, moduleAnalysis, churnByFile, rustFunctions);
   findings = findings.filter((finding) => finding.score >= (options.minScore ?? config.analysis.minScore));
   if (options.rule) {
     findings = findings.filter((finding) => finding.ruleId === options.rule);

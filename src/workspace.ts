@@ -13,12 +13,19 @@ interface PackageManifest {
   devDependencies?: Record<string, string>;
 }
 
+interface CargoManifest {
+  package?: { name?: string };
+  workspace?: { members?: string[] };
+  dependencies?: Record<string, unknown>;
+  "dev-dependencies"?: Record<string, unknown>;
+}
+
 interface IgnoreMatcher {
   baseDir: string;
   matcher: Ignore;
 }
 
-const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx"]);
+const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".rs"]);
 const ignoreFileNames = [".gitignore", ".ignore"];
 
 export async function discoverWorkspace(
@@ -77,6 +84,7 @@ function findWorkspaceRoot(startDir: string, markers: string[]): string {
 
 async function discoverPackageDirs(rootDir: string, configuredGlobs: string[]): Promise<string[]> {
   const manifests = new Set<string>();
+
   const rootManifestPath = path.join(rootDir, "package.json");
   if (existsSync(rootManifestPath)) {
     manifests.add(rootManifestPath);
@@ -84,6 +92,19 @@ async function discoverPackageDirs(rootDir: string, configuredGlobs: string[]): 
     const workspaceGlobs = readWorkspacePatterns(rootDir, rootManifest);
     for (const pattern of [...configuredGlobs, ...workspaceGlobs]) {
       const matches = await fg(`${pattern}/package.json`, { cwd: rootDir, absolute: true });
+      for (const match of matches) {
+        manifests.add(match);
+      }
+    }
+  }
+
+  const rootCargoPath = path.join(rootDir, "Cargo.toml");
+  if (existsSync(rootCargoPath)) {
+    manifests.add(rootCargoPath);
+    const cargo = readCargoManifest(rootCargoPath);
+    const memberGlobs = cargo.workspace?.members ?? [];
+    for (const pattern of memberGlobs) {
+      const matches = await fg(`${pattern}/Cargo.toml`, { cwd: rootDir, absolute: true });
       for (const match of matches) {
         manifests.add(match);
       }
@@ -113,23 +134,46 @@ function readWorkspacePatterns(rootDir: string, manifest: PackageManifest): stri
 
 function loadPackage(rootDir: string, dir: string): WorkspacePackage | undefined {
   const manifestPath = path.join(dir, "package.json");
-  if (!existsSync(manifestPath)) {
-    return undefined;
+  if (existsSync(manifestPath)) {
+    const manifest = readManifest(manifestPath);
+    const name = (manifest.name ?? normalizePath(path.relative(rootDir, dir))) || "root";
+    const tsconfigPath = findTsconfig(dir);
+    const dependencies = [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+    ];
+
+    return {
+      name,
+      dir,
+      manifestPath,
+      tsconfigPath,
+      dependencies,
+      internalDependencies: [],
+    };
   }
 
-  const manifest = readManifest(manifestPath);
-  const name = (manifest.name ?? normalizePath(path.relative(rootDir, dir))) || "root";
-  const tsconfigPath = findTsconfig(dir);
+  const cargoManifestPath = path.join(dir, "Cargo.toml");
+  if (existsSync(cargoManifestPath)) {
+    return loadCargoPackage(rootDir, dir, cargoManifestPath);
+  }
+
+  return undefined;
+}
+
+function loadCargoPackage(rootDir: string, dir: string, manifestPath: string): WorkspacePackage {
+  const cargo = readCargoManifest(manifestPath);
+  const name = (cargo.package?.name ?? normalizePath(path.relative(rootDir, dir))) || "root";
   const dependencies = [
-    ...Object.keys(manifest.dependencies ?? {}),
-    ...Object.keys(manifest.devDependencies ?? {}),
+    ...Object.keys(cargo.dependencies ?? {}),
+    ...Object.keys(cargo["dev-dependencies"] ?? {}),
   ];
 
   return {
     name,
     dir,
     manifestPath,
-    tsconfigPath,
+    tsconfigPath: undefined,
     dependencies,
     internalDependencies: [],
   };
@@ -137,6 +181,88 @@ function loadPackage(rootDir: string, dir: string): WorkspacePackage | undefined
 
 function readManifest(manifestPath: string): PackageManifest {
   return JSON.parse(readFileSync(manifestPath, "utf8")) as PackageManifest;
+}
+
+function readCargoManifest(manifestPath: string): CargoManifest {
+  const content = readFileSync(manifestPath, "utf8");
+  return parseCargoToml(content);
+}
+
+function parseCargoToml(content: string): CargoManifest {
+  const result: CargoManifest = {};
+  let currentSection = "";
+  let collectingArray = false;
+  let arrayKey = "";
+  let arrayValues: string[] = [];
+
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+
+    if (collectingArray) {
+      if (line === "]") {
+        collectingArray = false;
+        if (currentSection === "workspace" && arrayKey === "members") {
+          result.workspace = { ...result.workspace, members: arrayValues };
+        }
+        arrayValues = [];
+        arrayKey = "";
+      } else {
+        const valueMatch = /^"([^"]+)"/.exec(line.replace(/,\s*$/, ""));
+        if (valueMatch) {
+          arrayValues.push(valueMatch[1]);
+        }
+      }
+      continue;
+    }
+
+    if (line.startsWith("[") && !line.startsWith("[[")) {
+      currentSection = line.replace(/^\[+/, "").replace(/\]+.*$/, "").trim();
+      if (currentSection === "package") result.package = result.package ?? {};
+      if (currentSection === "workspace") result.workspace = result.workspace ?? {};
+      if (currentSection === "dependencies") result.dependencies = result.dependencies ?? {};
+      if (currentSection === "dev-dependencies") result["dev-dependencies"] = result["dev-dependencies"] ?? {};
+      continue;
+    }
+
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const eqIndex = line.indexOf("=");
+    if (eqIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, eqIndex).trim();
+    const value = line.slice(eqIndex + 1).trim();
+
+    if (currentSection === "package" && key === "name") {
+      const nameMatch = /^"([^"]*)"/.exec(value);
+      if (nameMatch) {
+        result.package = { ...result.package, name: nameMatch[1] };
+      }
+    } else if (currentSection === "workspace" && key === "members") {
+      if (value.startsWith("[") && !value.includes("]")) {
+        collectingArray = true;
+        arrayKey = "members";
+        arrayValues = [];
+      } else if (value.startsWith("[") && value.includes("]")) {
+        const inline = value.slice(1, value.lastIndexOf("]"));
+        const members: string[] = [];
+        for (const part of inline.split(",")) {
+          const m = /^"([^"]+)"/.exec(part.trim());
+          if (m) members.push(m[1]);
+        }
+        result.workspace = { ...result.workspace, members };
+      }
+    } else if (currentSection === "dependencies" && result.dependencies) {
+      (result.dependencies as Record<string, unknown>)[key] = value;
+    } else if (currentSection === "dev-dependencies" && result["dev-dependencies"]) {
+      (result["dev-dependencies"] as Record<string, unknown>)[key] = value;
+    }
+  }
+
+  return result;
 }
 
 function findTsconfig(dir: string): string | undefined {

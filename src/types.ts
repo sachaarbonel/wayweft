@@ -6,6 +6,27 @@ export type FindingCategory =
   | "architecture"
   | "maintainability";
 
+export type Language = "typescript" | "rust";
+
+export interface FunctionInfo {
+  name: string;
+  filePath: string;
+  packageName?: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  lineCount: number;
+  parameterCount: number;
+  parameterNames: string[];
+  booleanParamNames: string[];
+  hasBooleanParams: boolean;
+  maxNestingDepth: number;
+  branchCount: number;
+  bodyText: string;
+  language: Language;
+}
+
 export interface FixHandle {
   kind: "text-edit" | "codemod";
   fixId: string;
