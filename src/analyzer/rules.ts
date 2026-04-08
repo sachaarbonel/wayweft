@@ -12,6 +12,7 @@ import {
 import type {
   Finding,
   FindingCategory,
+  FunctionInfo,
   NormalizedConfig,
   NormalizedRuleConfig,
   ScanTarget,
@@ -43,6 +44,7 @@ export function runRules(
   target: ScanTarget,
   moduleAnalysis: ModuleGraphAnalysis,
   churnByFile: Map<string, number>,
+  rustFunctions?: FunctionInfo[],
 ): Finding[] {
   const fileToPackage = mapFilesToPackages(workspace);
   const context: RuleContext = {
@@ -65,6 +67,7 @@ export function runRules(
     ...findBlastRadiusHints(context),
     ...findChangeRiskFindings(context),
     ...findHotspotFindings(context),
+    ...(rustFunctions ? findFunctionComplexityFromFunctionInfo(rustFunctions, workspace, config, churnByFile, fileToPackage) : []),
   ];
   return findings.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
 }
@@ -1245,5 +1248,158 @@ function findBoundaryViolations(sourceFiles: SourceFile[], context: RuleContext)
       }
     }
   }
+  return findings;
+}
+
+function findFunctionComplexityFromFunctionInfo(
+  functions: FunctionInfo[],
+  workspace: Workspace,
+  config: NormalizedConfig,
+  churnByFile: Map<string, number>,
+  fileToPackage: Map<string, WorkspacePackage>,
+): Finding[] {
+  const findings: Finding[] = [];
+
+  for (const fn of functions) {
+    const pkg = fileToPackage.get(fn.filePath);
+    const packageName = fn.packageName ?? pkg?.name;
+    const relativePath = normalizePath(path.relative(workspace.rootDir, fn.filePath));
+    const churn = churnByFile.get(relativePath) ?? 0;
+    const internalDepsBonus = pkg && pkg.internalDependencies.length > 0 ? 5 : 0;
+
+    const packageRules = (() => {
+      if (!pkg) return config.rules;
+      const override = config.packages[pkg.name]?.rules ?? {};
+      const merged = { ...config.rules };
+      for (const [ruleId, value] of Object.entries(override)) {
+        merged[ruleId] = {
+          enabled: value.enabled ?? merged[ruleId]?.enabled ?? true,
+          maxLines: value.maxLines ?? merged[ruleId]?.maxLines ?? 45,
+          maxDepth: value.maxDepth ?? merged[ruleId]?.maxDepth ?? 3,
+          maxParams: value.maxParams ?? merged[ruleId]?.maxParams ?? 4,
+        };
+      }
+      return merged;
+    })();
+
+    const makeId = (ruleId: string) =>
+      `${ruleId}:${relativePath}:${fn.startLine}:${fn.name}`;
+    const makeScore = (structural: number) =>
+      Math.min(100, Math.round(structural + Math.min(20, churn) + internalDepsBonus));
+    const makeSeverity = (score: number) =>
+      score >= 75 ? ("error" as const) : score >= 40 ? ("warning" as const) : ("info" as const);
+
+    if (
+      packageRules["long-function"]?.enabled &&
+      fn.lineCount > packageRules["long-function"].maxLines
+    ) {
+      const structural = Math.min(40, fn.lineCount - packageRules["long-function"].maxLines + 20);
+      const score = makeScore(structural);
+      findings.push({
+        id: makeId("long-function"),
+        ruleId: "long-function",
+        title: "Long function",
+        message: `Function spans ${fn.lineCount} lines and exceeds the configured threshold of ${packageRules["long-function"].maxLines}.`,
+        category: "complexity",
+        severity: makeSeverity(score),
+        confidence: "high",
+        score,
+        packageName,
+        filePath: fn.filePath,
+        startLine: fn.startLine,
+        startColumn: fn.startColumn,
+        endLine: fn.endLine,
+        endColumn: 1,
+        symbolName: fn.name,
+        evidence: [
+          `lines=${fn.lineCount}`,
+          `threshold=${packageRules["long-function"].maxLines}`,
+          `branches=${fn.branchCount}`,
+          `depth=${fn.maxNestingDepth}`,
+          `language=rust`,
+        ],
+        suggestion: "Split the function into smaller units with one control-flow concern each.",
+      });
+    }
+
+    if (
+      packageRules["deep-nesting"]?.enabled &&
+      fn.maxNestingDepth > packageRules["deep-nesting"].maxDepth
+    ) {
+      const structural = 25 + fn.maxNestingDepth * 4;
+      const score = makeScore(structural);
+      findings.push({
+        id: makeId("deep-nesting"),
+        ruleId: "deep-nesting",
+        title: "Deep nesting",
+        message: `Function reaches nesting depth ${fn.maxNestingDepth}, above ${packageRules["deep-nesting"].maxDepth}.`,
+        category: "complexity",
+        severity: makeSeverity(score),
+        confidence: "high",
+        score,
+        packageName,
+        filePath: fn.filePath,
+        startLine: fn.startLine,
+        startColumn: fn.startColumn,
+        endLine: fn.endLine,
+        endColumn: 1,
+        symbolName: fn.name,
+        evidence: [`depth=${fn.maxNestingDepth}`, `branches=${fn.branchCount}`, `language=rust`],
+        suggestion: "Flatten guard clauses and extract inner branches into helper functions.",
+      });
+    }
+
+    if (
+      packageRules["too-many-params"]?.enabled &&
+      fn.parameterCount > packageRules["too-many-params"].maxParams
+    ) {
+      const structural = 24 + fn.parameterCount * 5;
+      const score = makeScore(structural);
+      findings.push({
+        id: makeId("too-many-params"),
+        ruleId: "too-many-params",
+        title: "Too many parameters",
+        message: `Function accepts ${fn.parameterCount} parameters, above ${packageRules["too-many-params"].maxParams}.`,
+        category: "maintainability",
+        severity: makeSeverity(score),
+        confidence: "high",
+        score,
+        packageName,
+        filePath: fn.filePath,
+        startLine: fn.startLine,
+        startColumn: fn.startColumn,
+        endLine: fn.endLine,
+        endColumn: 1,
+        symbolName: fn.name,
+        evidence: [...fn.parameterNames.filter((n) => n !== "self"), `language=rust`],
+        suggestion: "Introduce a parameter object or split the responsibility across multiple helpers.",
+      });
+    }
+
+    if (packageRules["boolean-param"]?.enabled && fn.hasBooleanParams) {
+      const structural = 30 + fn.booleanParamNames.length * 8;
+      const score = makeScore(structural);
+      findings.push({
+        id: makeId("boolean-param"),
+        ruleId: "boolean-param",
+        title: "Boolean flag parameter",
+        message: `Function exposes boolean flags (${fn.booleanParamNames.join(", ")}) that likely encode multiple behaviors.`,
+        category: "maintainability",
+        severity: makeSeverity(score),
+        confidence: "high",
+        score,
+        packageName,
+        filePath: fn.filePath,
+        startLine: fn.startLine,
+        startColumn: fn.startColumn,
+        endLine: fn.endLine,
+        endColumn: 1,
+        symbolName: fn.name,
+        evidence: [...fn.booleanParamNames, `language=rust`],
+        suggestion: "Split the call path into separate named functions or use an enum-like option.",
+      });
+    }
+  }
+
   return findings;
 }

@@ -6,6 +6,25 @@ slug: docs/changelog
 
 This changelog is intentionally lightweight. Record user-visible features, fixes, docs changes, and workflow updates here when they land.
 
+## 2026-04-08
+
+### Added
+
+- Added **Rust language support** via `web-tree-sitter` and `tree-sitter-rust`. Wayweft can now analyse `.rs` source files alongside TypeScript and JavaScript.
+- Rust files are included in the file inventory via the updated `sourceExtensions` set.
+- `Cargo.toml` is now a default workspace root marker, and Cargo workspace `[workspace] members` globs are used for multi-crate repository discovery.
+- Dependencies declared under `[dependencies]` and `[dev-dependencies]` in `Cargo.toml` are included in the package dependency graph.
+- Added `FunctionInfo` language-agnostic abstraction in `src/types.ts` that normalises function metadata across TypeScript and Rust.
+- Added `src/analyzer/parsers/tree-sitter-parser.ts` — initialises tree-sitter and loads the Rust grammar WASM.
+- Added `src/analyzer/extractors/rust.ts` — extracts `FunctionInfo[]` from Rust parse trees (function names, line counts, parameter counts, boolean params, nesting depth, branch count).
+- Added `src/analyzer/extractors/typescript.ts` — parallel TypeScript extractor producing `FunctionInfo[]` from `ts-morph` source files.
+- Ported the four core function-complexity rules (`long-function`, `deep-nesting`, `too-many-params`, `boolean-param`) to work on Rust files through the new abstraction.
+- Rust files are included in the module graph in `module-analysis.ts`, with LOC recorded and import/export edges placeholders ready for future `use`/`mod` resolution.
+- `use` and `mod` declarations are extracted from Rust files and stored for future import-cycle analysis.
+- Added `**/target/**` to `defaultIgnorePatterns` so Rust build artefacts are excluded from scans by default.
+- Added test fixtures for a single-crate Rust project and a Cargo workspace with two member crates.
+- Added 14 unit and integration tests covering tree-sitter initialisation, Rust function extraction, and end-to-end scan findings.
+
 ## 2026-03-25
 
 ### Added

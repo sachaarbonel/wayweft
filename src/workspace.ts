@@ -3,6 +3,7 @@ import path from "node:path";
 import fg from "fast-glob";
 import ignore, { type Ignore } from "ignore";
 import yaml from "js-yaml";
+import { parse as parseToml } from "smol-toml";
 import type { NormalizedConfig, ScanTarget, Workspace, WorkspacePackage } from "./types";
 import { getChangedFiles } from "./utils/git";
 import { normalizePath } from "./utils/fs";
@@ -13,12 +14,19 @@ interface PackageManifest {
   devDependencies?: Record<string, string>;
 }
 
+interface CargoManifest {
+  package?: { name?: string };
+  workspace?: { members?: string[] };
+  dependencies?: Record<string, unknown>;
+  "dev-dependencies"?: Record<string, unknown>;
+}
+
 interface IgnoreMatcher {
   baseDir: string;
   matcher: Ignore;
 }
 
-const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx"]);
+const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".rs"]);
 const ignoreFileNames = [".gitignore", ".ignore"];
 
 export async function discoverWorkspace(
@@ -77,6 +85,7 @@ function findWorkspaceRoot(startDir: string, markers: string[]): string {
 
 async function discoverPackageDirs(rootDir: string, configuredGlobs: string[]): Promise<string[]> {
   const manifests = new Set<string>();
+
   const rootManifestPath = path.join(rootDir, "package.json");
   if (existsSync(rootManifestPath)) {
     manifests.add(rootManifestPath);
@@ -84,6 +93,19 @@ async function discoverPackageDirs(rootDir: string, configuredGlobs: string[]): 
     const workspaceGlobs = readWorkspacePatterns(rootDir, rootManifest);
     for (const pattern of [...configuredGlobs, ...workspaceGlobs]) {
       const matches = await fg(`${pattern}/package.json`, { cwd: rootDir, absolute: true });
+      for (const match of matches) {
+        manifests.add(match);
+      }
+    }
+  }
+
+  const rootCargoPath = path.join(rootDir, "Cargo.toml");
+  if (existsSync(rootCargoPath)) {
+    manifests.add(rootCargoPath);
+    const cargo = readCargoManifest(rootCargoPath);
+    const memberGlobs = cargo.workspace?.members ?? [];
+    for (const pattern of memberGlobs) {
+      const matches = await fg(`${pattern}/Cargo.toml`, { cwd: rootDir, absolute: true });
       for (const match of matches) {
         manifests.add(match);
       }
@@ -113,23 +135,46 @@ function readWorkspacePatterns(rootDir: string, manifest: PackageManifest): stri
 
 function loadPackage(rootDir: string, dir: string): WorkspacePackage | undefined {
   const manifestPath = path.join(dir, "package.json");
-  if (!existsSync(manifestPath)) {
-    return undefined;
+  if (existsSync(manifestPath)) {
+    const manifest = readManifest(manifestPath);
+    const name = (manifest.name ?? normalizePath(path.relative(rootDir, dir))) || "root";
+    const tsconfigPath = findTsconfig(dir);
+    const dependencies = [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+    ];
+
+    return {
+      name,
+      dir,
+      manifestPath,
+      tsconfigPath,
+      dependencies,
+      internalDependencies: [],
+    };
   }
 
-  const manifest = readManifest(manifestPath);
-  const name = (manifest.name ?? normalizePath(path.relative(rootDir, dir))) || "root";
-  const tsconfigPath = findTsconfig(dir);
+  const cargoManifestPath = path.join(dir, "Cargo.toml");
+  if (existsSync(cargoManifestPath)) {
+    return loadCargoPackage(rootDir, dir, cargoManifestPath);
+  }
+
+  return undefined;
+}
+
+function loadCargoPackage(rootDir: string, dir: string, manifestPath: string): WorkspacePackage {
+  const cargo = readCargoManifest(manifestPath);
+  const name = (cargo.package?.name ?? normalizePath(path.relative(rootDir, dir))) || "root";
   const dependencies = [
-    ...Object.keys(manifest.dependencies ?? {}),
-    ...Object.keys(manifest.devDependencies ?? {}),
+    ...Object.keys(cargo.dependencies ?? {}),
+    ...Object.keys(cargo["dev-dependencies"] ?? {}),
   ];
 
   return {
     name,
     dir,
     manifestPath,
-    tsconfigPath,
+    tsconfigPath: undefined,
     dependencies,
     internalDependencies: [],
   };
@@ -139,6 +184,25 @@ function readManifest(manifestPath: string): PackageManifest {
   return JSON.parse(readFileSync(manifestPath, "utf8")) as PackageManifest;
 }
 
+function readCargoManifest(manifestPath: string): CargoManifest {
+  try {
+    const parsed = parseToml(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    const pkg = parsed["package"] as Record<string, unknown> | undefined;
+    const workspace = parsed["workspace"] as Record<string, unknown> | undefined;
+    const dependencies = parsed["dependencies"] as Record<string, unknown> | undefined;
+    const devDependencies = parsed["dev-dependencies"] as Record<string, unknown> | undefined;
+    return {
+      package: pkg ? { name: typeof pkg["name"] === "string" ? pkg["name"] : undefined } : undefined,
+      workspace: workspace
+        ? { members: Array.isArray(workspace["members"]) ? (workspace["members"] as string[]) : [] }
+        : undefined,
+      dependencies,
+      "dev-dependencies": devDependencies,
+    };
+  } catch {
+    return {};
+  }
+}
 function findTsconfig(dir: string): string | undefined {
   const candidates = [
     "tsconfig.json",

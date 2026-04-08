@@ -73,6 +73,7 @@ export const defaultIgnorePatterns = [
   "**/node_modules/**",
   "**/fixtures/**",
   "**/migrations/**",
+  "**/target/**",
 ] as const;
 
 export function defineConfig(config: WayweftConfig): WayweftConfig {
@@ -146,6 +147,7 @@ export function normalizeConfig(config: WayweftConfig): NormalizedConfig {
         "nx.json",
         "rush.json",
         "package.json",
+        "Cargo.toml",
         ".git",
       ],
       packageGlobs: config.workspace?.packageGlobs ?? [

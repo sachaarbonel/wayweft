@@ -1,7 +1,14 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { Node, Project, SyntaxKind, type SourceFile } from "ts-morph";
 import type { FileHotspot, HotspotSignals, Workspace, WorkspacePackage } from "../types";
 import { normalizePath } from "../utils/fs";
+
+export interface RustFileData {
+  filePath: string;
+  packageName?: string;
+  imports: string[];
+}
 
 export interface ModuleGraphNode {
   filePath: string;
@@ -42,6 +49,7 @@ export function analyzeModules(input: {
   fileToPackage: Map<string, WorkspacePackage>;
   churnByFile: Map<string, number>;
   ownershipByFile: Map<string, number>;
+  rustFileData?: RustFileData[];
 }): ModuleGraphAnalysis {
   const sourceFiles = input.project.getSourceFiles();
   const sourceFileByPath = new Map<string, SourceFile>();
@@ -89,6 +97,32 @@ export function analyzeModules(input: {
   for (const filePath of input.workspace.fileInventory) {
     const sourceFile = sourceFileByPath.get(filePath);
     if (!sourceFile) {
+      // Handle Rust files that aren't in ts-morph project
+      if (filePath.endsWith(".rs")) {
+        const rustData = input.rustFileData?.find((d) => d.filePath === filePath);
+        if (rustData) {
+          const relativePath = normalizePath(path.relative(input.workspace.rootDir, filePath));
+          const importList = [...(imports.get(filePath) ?? [])].sort();
+          const importedByList = [...(importedBy.get(filePath) ?? [])].sort();
+          const component = componentByFile.get(filePath) ?? [filePath];
+          const locCount = countLocFromFile(filePath);
+          nodes.set(filePath, {
+            filePath,
+            relativePath,
+            packageName: rustData.packageName,
+            loc: locCount,
+            complexity: 1,
+            churn: input.churnByFile.get(relativePath) ?? 0,
+            ownership: input.ownershipByFile.get(relativePath) ?? 0,
+            imports: importList,
+            importedBy: importedByList,
+            fanOut: importList.length,
+            fanIn: importedByList.length,
+            blastRadius: reachableDependents(filePath, importedBy),
+            componentSize: component.length,
+          });
+        }
+      }
       continue;
     }
     const relativePath = normalizePath(path.relative(input.workspace.rootDir, filePath));
@@ -418,12 +452,20 @@ function normalizedPercent(value: number, max: number): number {
   return Math.round((value / max) * 100);
 }
 
+function countLinesOfCode(lines: string[]): number {
+  return lines.map((line) => line.trim()).filter(Boolean).length;
+}
+
 function countLoc(sourceFile: SourceFile): number {
-  return sourceFile
-    .getFullText()
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean).length;
+  return countLinesOfCode(sourceFile.getFullText().split(/\r?\n/));
+}
+
+function countLocFromFile(filePath: string): number {
+  try {
+    return countLinesOfCode(readFileSync(filePath, "utf8").split(/\r?\n/));
+  } catch {
+    return 0;
+  }
 }
 
 function estimateComplexity(sourceFile: SourceFile): number {
