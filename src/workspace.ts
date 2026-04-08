@@ -3,6 +3,7 @@ import path from "node:path";
 import fg from "fast-glob";
 import ignore, { type Ignore } from "ignore";
 import yaml from "js-yaml";
+import { parse as parseToml } from "smol-toml";
 import type { NormalizedConfig, ScanTarget, Workspace, WorkspacePackage } from "./types";
 import { getChangedFiles } from "./utils/git";
 import { normalizePath } from "./utils/fs";
@@ -184,87 +185,24 @@ function readManifest(manifestPath: string): PackageManifest {
 }
 
 function readCargoManifest(manifestPath: string): CargoManifest {
-  const content = readFileSync(manifestPath, "utf8");
-  return parseCargoToml(content);
-}
-
-function parseCargoToml(content: string): CargoManifest {
-  const result: CargoManifest = {};
-  let currentSection = "";
-  let collectingArray = false;
-  let arrayKey = "";
-  let arrayValues: string[] = [];
-
-  for (const rawLine of content.split("\n")) {
-    const line = rawLine.trim();
-
-    if (collectingArray) {
-      if (line === "]") {
-        collectingArray = false;
-        if (currentSection === "workspace" && arrayKey === "members") {
-          result.workspace = { ...result.workspace, members: arrayValues };
-        }
-        arrayValues = [];
-        arrayKey = "";
-      } else {
-        const valueMatch = /^"([^"]+)"/.exec(line.replace(/,\s*$/, ""));
-        if (valueMatch) {
-          arrayValues.push(valueMatch[1]);
-        }
-      }
-      continue;
-    }
-
-    if (line.startsWith("[") && !line.startsWith("[[")) {
-      currentSection = line.replace(/^\[+/, "").replace(/\]+.*$/, "").trim();
-      if (currentSection === "package") result.package = result.package ?? {};
-      if (currentSection === "workspace") result.workspace = result.workspace ?? {};
-      if (currentSection === "dependencies") result.dependencies = result.dependencies ?? {};
-      if (currentSection === "dev-dependencies") result["dev-dependencies"] = result["dev-dependencies"] ?? {};
-      continue;
-    }
-
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const eqIndex = line.indexOf("=");
-    if (eqIndex === -1) {
-      continue;
-    }
-
-    const key = line.slice(0, eqIndex).trim();
-    const value = line.slice(eqIndex + 1).trim();
-
-    if (currentSection === "package" && key === "name") {
-      const nameMatch = /^"([^"]*)"/.exec(value);
-      if (nameMatch) {
-        result.package = { ...result.package, name: nameMatch[1] };
-      }
-    } else if (currentSection === "workspace" && key === "members") {
-      if (value.startsWith("[") && !value.includes("]")) {
-        collectingArray = true;
-        arrayKey = "members";
-        arrayValues = [];
-      } else if (value.startsWith("[") && value.includes("]")) {
-        const inline = value.slice(1, value.lastIndexOf("]"));
-        const members: string[] = [];
-        for (const part of inline.split(",")) {
-          const m = /^"([^"]+)"/.exec(part.trim());
-          if (m) members.push(m[1]);
-        }
-        result.workspace = { ...result.workspace, members };
-      }
-    } else if (currentSection === "dependencies" && result.dependencies) {
-      (result.dependencies as Record<string, unknown>)[key] = value;
-    } else if (currentSection === "dev-dependencies" && result["dev-dependencies"]) {
-      (result["dev-dependencies"] as Record<string, unknown>)[key] = value;
-    }
+  try {
+    const parsed = parseToml(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    const pkg = parsed["package"] as Record<string, unknown> | undefined;
+    const workspace = parsed["workspace"] as Record<string, unknown> | undefined;
+    const dependencies = parsed["dependencies"] as Record<string, unknown> | undefined;
+    const devDependencies = parsed["dev-dependencies"] as Record<string, unknown> | undefined;
+    return {
+      package: pkg ? { name: typeof pkg["name"] === "string" ? pkg["name"] : undefined } : undefined,
+      workspace: workspace
+        ? { members: Array.isArray(workspace["members"]) ? (workspace["members"] as string[]) : [] }
+        : undefined,
+      dependencies,
+      "dev-dependencies": devDependencies,
+    };
+  } catch {
+    return {};
   }
-
-  return result;
 }
-
 function findTsconfig(dir: string): string | undefined {
   const candidates = [
     "tsconfig.json",

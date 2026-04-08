@@ -100,8 +100,11 @@ export async function scanWorkspace(options: ScanOptions): Promise<ScanResult> {
           imports: extractRustImports(filePath, tsParser),
         };
       });
-    } catch {
+    } catch (err) {
       // tree-sitter unavailable — skip Rust analysis gracefully
+      process.stderr.write(
+        `[wayweft] warning: Rust analysis skipped — tree-sitter failed to initialize: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     }
   }
 

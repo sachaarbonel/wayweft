@@ -452,20 +452,17 @@ function normalizedPercent(value: number, max: number): number {
   return Math.round((value / max) * 100);
 }
 
+function countLinesOfCode(lines: string[]): number {
+  return lines.map((line) => line.trim()).filter(Boolean).length;
+}
+
 function countLoc(sourceFile: SourceFile): number {
-  return sourceFile
-    .getFullText()
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean).length;
+  return countLinesOfCode(sourceFile.getFullText().split(/\r?\n/));
 }
 
 function countLocFromFile(filePath: string): number {
   try {
-    return readFileSync(filePath, "utf8")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean).length;
+    return countLinesOfCode(readFileSync(filePath, "utf8").split(/\r?\n/));
   } catch {
     return 0;
   }
